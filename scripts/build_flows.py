@@ -1,4 +1,4 @@
-"""Build a US money-flow network (2017) from BEA data and write web/data/flows.js.
+"""Build a US money-flow network from BEA/Fed data and write web/data/flows_<year>.js.
 
 All dollar values are in $ millions (BEA convention) until written out.
 Every modelling choice that is not straight from the data is recorded in ASSUMPTIONS
@@ -8,6 +8,7 @@ and shipped to the browser so it can be audited.
 import argparse
 import csv
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -17,18 +18,67 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
-OUT = ROOT / "web" / "data" / "flows.js"
-YEAR = 2023  # overridden by --year
+OUT_DIR = ROOT / "web" / "data"
+YEAR = 2025  # overridden by --year
 IO_DETAIL_YEAR = 2017  # only year BEA publishes the 402-industry detail tables
+SUMMARY_LAST = 2023  # last year of BEA's summary Use/Make tables; later years are projected
 SOURCE_YEARS = {}
 
 # ---- Tunable assumptions (all $ millions unless noted) -------------------------------
 FRB_DWELL_DAYS = 7.0  # Fed remits earnings to Treasury weekly
-# Federal Reserve Banks' income statement, from the Board's annual income & expense press releases.
-# 2023 reserve/repo split derived from the reported 2021->2022 and 2022->2023 changes.
+# Federal Reserve Banks' income statement ($M). 2023-2025: audited Combined Statements of Operations
+# (tsy = Treasury securities; mbs = agency MBS + GSE debt; reserves = "depository institutions and
+# others"; repo = securities sold under repurchase agreements). 2017: income & expense press release,
+# securities income split Treasury/MBS by Z.1 holdings.
 FED_FINANCIALS = {
     2017: {"securities_income": 113.6e3, "int_reserves": 25.9e3, "int_repo": 4.0e3},
-    2023: {"securities_income": 163.8e3, "int_reserves": 176.6e3, "int_repo": 104.5e3},
+    2023: {"tsy": 106_479, "mbs": 57_148, "int_reserves": 176_755, "int_repo": 104_341},
+    2024: {"tsy": 100_518, "mbs": 52_778, "int_reserves": 186_478, "int_repo": 40_288},
+    2025: {"tsy": 106_560, "mbs": 48_158, "int_reserves": 147_662, "int_repo": 19_719},
+}
+
+# BEA summary IO industry -> line number in the GDP-by-industry tables (TGO105 / TVA105)
+GDPIND_LINES = {
+    "111CA": 4, "113FF": 5, "211": 7, "212": 8, "213": 9, "22": 10, "23": 11,
+    "321": 14, "327": 15, "331": 16, "332": 17, "333": 18, "334": 19, "335": 20,
+    "3361MV": 21, "3364OT": 22, "337": 23, "339": 24, "311FT": 26, "313TT": 27,
+    "315AL": 28, "322": 29, "323": 30, "324": 31, "325": 32, "326": 33, "42": 34,
+    "441": 36, "445": 37, "452": 38, "4A0": 39, "481": 41, "482": 42, "483": 43,
+    "484": 44, "485": 45, "486": 46, "487OS": 47, "493": 48, "511": 50, "512": 51,
+    "513": 52, "514": 53, "521CI": 56, "523": 57, "524": 58, "525": 59, "HS": 62,
+    "ORE": 63, "532RL": 64, "5411": 67, "5415": 68, "5412OP": 69, "55": 70, "561": 72,
+    "562": 73, "61": 75, "621": 77, "622": 78, "623": 79, "624": 80, "711AS": 83,
+    "713": 84, "721": 86, "722": 87, "81": 88, "GFGD": 92, "GFGN": 93, "GFE": 94,
+    "GSLG": 96, "GSLE": 97,
+}  # fmt: skip
+# summary final-demand column (or 3-char prefix) -> NIPA aggregate used to project it
+FD_NIPA = {
+    "F010": "DPCERC",
+    "F02E": "Y033RC",
+    "F02N": "Y001RC",
+    "F02R": "A011RC",
+    "F02S": "B009RC",
+    "F030": "A014RC",
+    "F040": "B020RC",
+    "F050": "B021RC",
+    "F06": "A824RC",
+    "F07": "A825RC",
+    "F10": "A829RC",
+}
+
+NODE_URLS = {
+    "FED_SRC": "https://fiscaldata.treasury.gov/americas-finance-guide/federal-spending/",
+    "FED_SINK": "https://fiscaldata.treasury.gov/americas-finance-guide/government-revenue/",
+    "SL": "https://www.census.gov/programs-surveys/gov-finances.html",
+    "FRB": "https://www.federalreserve.gov/aboutthefed/audited-annual-financial-statements.htm",
+    "ROW_SRC": "https://www.bea.gov/data/intl-trade-investment/international-transactions",
+    "ROW_SINK": "https://www.bea.gov/data/intl-trade-investment/international-transactions",
+    "CREDIT": "https://www.bankofengland.co.uk/quarterly-bulletin/2014/q1/money-creation-in-the-modern-economy",
+    "SAVING": "https://www.bankofengland.co.uk/quarterly-bulletin/2014/q1/money-creation-in-the-modern-economy",
+    "PEN_SRC": "https://www.dol.gov/general/topic/retirement/typesofplans",
+    "PEN_SINK": "https://www.dol.gov/general/topic/retirement/typesofplans",
+    "HH": "https://www.bea.gov/data/special-topics/distribution-of-personal-income",
+    "GOV_IND": "https://www.bea.gov/data/gdp/gdp-industry",
 }
 HH_INTEREST_DEPOSITORY = (
     0.7  # share of household interest payments going to banks (rest non-bank lenders)
@@ -338,16 +388,21 @@ def code_str(v):
 
 
 # ---- Loaders ---------------------------------------------------------------------------
-def load_nipa():
+def nipa_values(codes, year):
     vals = {}
-    wanted = set(NIPA_SERIES.values())
+    wanted = set(codes)
     with open(RAW / "NipaDataA.txt", encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
-            if row["%SeriesCode"] in wanted and row["Period"] == str(YEAR):
+            if row["%SeriesCode"] in wanted and row["Period"] == str(year):
                 vals[row["%SeriesCode"]] = float(row["Value"].replace(",", ""))
     missing = wanted - set(vals)
     if missing:
-        raise SystemExit(f"Missing NIPA series: {missing}")
+        raise SystemExit(f"Missing NIPA series for {year}: {missing}")
+    return vals
+
+
+def load_nipa():
+    vals = nipa_values(NIPA_SERIES.values(), YEAR)
     return {k: vals[v] for k, v in NIPA_SERIES.items()}
 
 
@@ -366,11 +421,13 @@ def load_hierarchy():
         if pd.notna(c1) and pd.notna(c2):
             summary, summary_name = code_str(c1), str(c2).strip()
         if pd.notna(c3) and pd.notna(c4):
+            naics = re.match(r"\d+", str(r[6]).strip()) if pd.notna(r[6]) else None
             info[code_str(c3)] = {
                 "sector": sector,
                 "summary": summary,
                 "summary_name": summary_name,
                 "name": str(c4).strip(),
+                "naics": naics.group(0) if naics else None,
             }
     return info
 
@@ -426,11 +483,11 @@ def load_make(industries, commodities):
     return M
 
 
-def load_summary(kind):
-    """BEA summary Use or Make table for YEAR as {(row code, col code): $M}."""
+def load_summary(kind, year):
+    """BEA summary Use or Make table for a year as {(row code, col code): $M}."""
     df = pd.read_excel(
         RAW / "io" / f"IO{kind}_Before_Redefinitions_PRO_1997-2023_Summary.xlsx",
-        sheet_name=str(YEAR),
+        sheet_name=str(year),
         header=None,
     )
     cols = [code_str(c) if pd.notna(c) else None for c in df.iloc[5]]
@@ -443,6 +500,62 @@ def load_summary(kind):
         for j, c in enumerate(cols)
         if j >= 2 and c
     }
+
+
+def gdpind_table(file, sheet):
+    """BEA GDP-by-industry table as a function (line number, year) -> $M or percent."""
+    df = pd.read_excel(RAW / "gdpind" / file, sheet_name=sheet, header=None)
+    hdr = next(i for i in range(len(df)) if str(df.iat[i, 0]).strip() == "Line")
+    ycol = {}
+    for j, v in enumerate(df.iloc[hdr]):
+        try:
+            ycol[int(float(v))] = j
+        except (TypeError, ValueError):
+            pass
+    rows = {}
+    for i in range(hdr + 1, len(df)):
+        try:
+            rows[int(float(df.iat[i, 0]))] = i
+        except (TypeError, ValueError):
+            pass
+    vals = df.apply(pd.to_numeric, errors="coerce")  # '.....' = suppressed -> NaN
+    return lambda line, year: float(vals.iat[rows[line], ycol[year]])
+
+
+def project_summary(su, sm):
+    """Project the SUMMARY_LAST summary Use/Make tables to YEAR (a nowcast)."""
+    y0 = SUMMARY_LAST
+    go = gdpind_table("GrossOutput.xlsx", "TGO105-A")
+    va = gdpind_table("ValueAdded.xlsx", "TVA105-A")
+    va_pct = gdpind_table("ValueAdded.xlsx", "TVA112-A")
+    n0, n1 = nipa_values(FD_NIPA.values(), y0), nipa_values(FD_NIPA.values(), YEAR)
+    va_rows = {"V001": 1, "V002": 2, "V003": 3}
+    use = {}
+    for (r, c), v in su.items():
+        if c in GDPIND_LINES:
+            L = GDPIND_LINES[c]
+            if r in va_rows:  # TVA112 lays out each industry as 4 lines: total + 3 components
+                pct = va_pct(4 * (L - 1) + 1 + va_rows[r], YEAR)
+                use[(r, c)] = (
+                    va(L, YEAR) * pct / 100
+                    if np.isfinite(pct)
+                    else v * va(L, YEAR) / va(L, y0)
+                )
+            else:
+                ii0, ii1 = go(L, y0) - va(L, y0), go(L, YEAR) - va(L, YEAR)
+                use[(r, c)] = v * ii1 / ii0
+        else:
+            key = c if c in FD_NIPA else c[:3]
+            s = FD_NIPA.get(key)
+            use[(r, c)] = v * n1[s] / n0[s] if s and n0[s] else v
+    make = {}
+    for (r, c), v in sm.items():
+        L = GDPIND_LINES.get(r)
+        make[(r, c)] = v * go(L, YEAR) / go(L, y0) if L else v
+    unmatched = {c for (_, c) in su if c and c[0].isdigit()} - set(GDPIND_LINES)
+    if unmatched:
+        print("warning: summary industries without GDP-by-industry line:", unmatched)
+    return use, make
 
 
 def scale_blocks(M, row_codes, col_codes, row_map, col_map, target):
@@ -498,7 +611,11 @@ def load_household_shares():
     d = d[
         (d.Year == dpi_year) & (d.Ranking == "Equivalized Disposable Personal Income")
     ]
-    d["Value"] = pd.to_numeric(d["Value"], errors="coerce")
+    def num(v):  # recent years publish top shares as ranges, e.g. "[0.137-0.143]": use the midpoint
+        m = re.fullmatch(r"\[([\d.]+)-([\d.]+)\]", str(v).strip())
+        return (float(m[1]) + float(m[2])) / 2 if m else pd.to_numeric(v, errors="coerce")
+
+    d["Value"] = d["Value"].map(num).astype(float)
 
     dpi = dict(
         zip(
@@ -679,7 +796,10 @@ def main():
 
     scale_note = ""
     if YEAR != IO_DETAIL_YEAR:
-        su, sm = load_summary("Use"), load_summary("Make")
+        io_year = min(YEAR, SUMMARY_LAST)
+        su, sm = load_summary("Use", io_year), load_summary("Make", io_year)
+        if YEAR > SUMMARY_LAST:
+            su, sm = project_summary(su, sm)
         summ = lambda c: hier.get(c, {}).get("summary", c)  # noqa: E731
         va_codes = ["V00100", "V00200", "V00300"]
         Z, l1, t1 = scale_blocks(Z, coms, inds, summ, summ, su)
@@ -705,6 +825,20 @@ def main():
             f"within-summary detail mix is from {IO_DETAIL_YEAR}. Summary cells with no {IO_DETAIL_YEAR} "
             f"detail counterpart are dropped ({lost:.2%} of {YEAR} table value)."
         )
+        if YEAR > SUMMARY_LAST:
+            SOURCE_YEARS["input-output structure (summary)"] = SUMMARY_LAST
+            scale_note += (
+                f" NOWCAST: BEA's summary IO tables stop at {SUMMARY_LAST}, so the {YEAR} summary tables "
+                f"are projected from {SUMMARY_LAST}: each industry's intermediate-input column is scaled "
+                f"by its growth in (gross output - value added) from BEA GDP-by-industry; value-added "
+                f"rows (compensation, taxes on production, operating surplus) are set to BEA's {YEAR} "
+                "GDP-by-industry values; each final-demand column is scaled by its NIPA aggregate "
+                "(PCE, equipment, IP products, structures, residential, inventories, exports, imports, "
+                "federal defense / nondefense, state & local); Make-table rows are scaled by each "
+                f"industry's gross-output growth. The commodity mix inside each column is held at "
+                f"{SUMMARY_LAST} shares, so price/mix shifts within an industry since {SUMMARY_LAST} are "
+                "not captured."
+            )
     SOURCE_YEARS["input-output structure (detail)"] = IO_DETAIL_YEAR
 
     assume(
@@ -1018,9 +1152,16 @@ def main():
     gos_priv = np.clip(gos, 0, None)
     gos_priv_tot = sum(gos_priv[j] for j in private)
     fedfin = FED_FINANCIALS[YEAR]
-    tsy_share = z1["fed_tsy"] / (z1["fed_tsy"] + z1["fed_agency"])
-    fed_tsy_int = fedfin["securities_income"] * tsy_share
-    fed_mbs_int = fedfin["securities_income"] - fed_tsy_int
+    if "tsy" in fedfin:
+        sec_income = fedfin["tsy"] + fedfin["mbs"]
+        tsy_share = fedfin["tsy"] / sec_income
+        split_src = "as reported"
+    else:
+        sec_income = fedfin["securities_income"]
+        tsy_share = z1["fed_tsy"] / (z1["fed_tsy"] + z1["fed_agency"])
+        split_src = "split by its Z.1 holdings"
+    fed_tsy_int = sec_income * tsy_share
+    fed_mbs_int = sec_income - fed_tsy_int
     fed_int_to_frb = fed_tsy_int
     fed_int_res = nipa["fed_interest"] - nipa["fed_int_row"]
     # interest the Treasury pays its own employee pension funds is intra-federal: netted out
@@ -1271,7 +1412,7 @@ def main():
         fedfin["int_reserves"]
         + fedfin["int_repo"]
         + nipa["fed_frb_remit"]
-        - fedfin["securities_income"]
+        - sec_income
     )
     add(
         "FED_SRC", "FRB", "Fed losses funded by new reserves (deferred asset)", fed_loss
@@ -1295,8 +1436,8 @@ def main():
         'gap between outflows and inflows is filled by "Bank credit & dis-saving" (source) or sent to '
         '"Net saving & debt repayment" (sink). Pension funds are also split into a source and a sink '
         "(see Pensions). The Federal Reserve is consolidated with the Treasury on the money-creation "
-        f"side: in {YEAR} it earned ${fedfin['securities_income']/1e3:.0f}B on its securities (split "
-        f"{tsy_share:.0%} Treasuries / {1-tsy_share:.0%} mortgage-backed by its Z.1 holdings; the MBS "
+        f"side: in {YEAR} it earned ${sec_income/1e3:.0f}B on its securities ("
+        f"{tsy_share:.0%} Treasuries / {1-tsy_share:.0%} mortgage-backed, {split_src}; the MBS "
         "part arrives from the banking node, which collects mortgage interest), paid "
         f"${fedfin['int_reserves']/1e3:.0f}B interest on bank reserves and ${fedfin['int_repo']/1e3:.0f}B "
         "on reverse repos (passed to households via money market funds by interest-income shares) and "
@@ -1528,10 +1669,14 @@ def main():
         "These inputs are typed into build_flows.py rather than read from a downloaded file; edit them "
         "there to test sensitivity. "
         f"(1) Federal Reserve {YEAR} income statement: securities income "
-        f"${fedfin['securities_income']/1e3:.1f}B, interest on reserves ${fedfin['int_reserves']/1e3:.1f}B, "
-        f"interest on reverse repos ${fedfin['int_repo']/1e3:.1f}B (Fed Board income & expense press "
-        f"releases; the reserve/repo split is derived from reported year-on-year changes), and a "
-        f"{FRB_DWELL_DAYS:.0f}-day Fed holding time. "
+        f"${sec_income/1e3:.1f}B, interest on reserves ${fedfin['int_reserves']/1e3:.1f}B, "
+        f"interest on reverse repos ${fedfin['int_repo']/1e3:.1f}B ("
+        + (
+            "Federal Reserve Banks' audited Combined Statements of Operations"
+            if "tsy" in fedfin
+            else "Fed Board income & expense press release"
+        )
+        + f"), and a {FRB_DWELL_DAYS:.0f}-day Fed holding time. "
         f"(2) {HH_INTEREST_DEPOSITORY:.0%} of household interest payments go to banks. "
         f"(3) Medicare+Medicaid capped at {GOV_HEALTH_CAP:.0%} of PCE on health providers; private "
         "insurance claims capped so all payers together cover at most 95%. "
@@ -1555,6 +1700,22 @@ def main():
         "timing: every flow is an annual average.",
     )
 
+    def node_url(n, codes):
+        if n in NODE_URLS:
+            return NODE_URLS[n]
+        if n in hh_ids:
+            return NODE_URLS["HH"]
+        naics = [hier.get(c, {}).get("naics") for c in codes]
+        naics = [x for x in naics if x]
+        if not naics:
+            return NODE_URLS["GOV_IND"]
+        if len(naics) > 1:  # grouped node: longest common NAICS prefix (at least 2 digits)
+            p = naics[0]
+            while len(p) > 2 and not all(x.startswith(p) for x in naics):
+                p = p[:-1]
+            naics = [p]
+        return f"https://www.census.gov/naics/?input={naics[0]}&year=2022&details={naics[0]}"
+
     nodes = []
     for n in sorted(all_nodes):
         if n in special:
@@ -1569,6 +1730,7 @@ def main():
                 "name": name,
                 "sector": sector,
                 "kind": kind,
+                "url": node_url(n, meta["codes"]),
                 "codes": meta["codes"],
                 "output": round(meta.get("output", 0) / 1e3, 3),
                 "inflow": round(inflow[n] / 1e3, 3),
@@ -1632,18 +1794,36 @@ def main():
             "name": "Federal Reserve Distributional Financial Accounts (deposits by income group)",
             "url": "https://www.federalreserve.gov/releases/z1/dataviz/download/zips/dfa.zip",
         },
-        {
-            "name": "Federal Reserve Board: Reserve Bank income & expenses 2023 (press release)",
-            "url": "https://www.federalreserve.gov/newsevents/pressreleases/other20240112a.htm",
-        },
-        {
-            "name": "Federal Reserve Board: Reserve Bank income & expenses 2022 (press release)",
-            "url": "https://www.federalreserve.gov/newsevents/pressreleases/other20230113a.htm",
-        },
     ]
+    if "tsy" in fedfin:
+        sources.append(
+            {
+                "name": f"Federal Reserve Banks: audited combined financial statements (covers {YEAR})",
+                "url": f"https://www.federalreserve.gov/aboutthefed/files/combinedfinstmt{max(YEAR, 2024)}.pdf",
+            }
+        )
+    else:
+        sources.append(
+            {
+                "name": "Federal Reserve Board: Reserve Bank income & expenses (annual press releases)",
+                "url": "https://www.federalreserve.gov/aboutthefed/audited-annual-financial-statements.htm",
+            }
+        )
+    if YEAR > SUMMARY_LAST:
+        sources += [
+            {
+                "name": "BEA GDP by Industry: gross output by industry (TGO105)",
+                "url": "https://apps.bea.gov/industry/Release/XLS/GDPxInd/GrossOutput.xlsx",
+            },
+            {
+                "name": "BEA GDP by Industry: value added and its components by industry (TVA105, TVA112)",
+                "url": "https://apps.bea.gov/industry/Release/XLS/GDPxInd/ValueAdded.xlsx",
+            },
+        ]
     data = {
         "meta": {
             "year": YEAR,
+            "nowcast": YEAR > SUMMARY_LAST,
             "units": "$ billions per year",
             "industryNodes": len(node_meta),
             "nodeCount": len(nodes),
@@ -1655,17 +1835,26 @@ def main():
         "sources": sources,
         "nipa": {k_: round(v / 1e3, 1) for k_, v in nipa.items()},
     }
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(
-        "window.SFC_DATA = " + json.dumps(data, separators=(",", ":")) + ";\n",
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out = OUT_DIR / f"flows_{YEAR}.js"
+    out.write_text(
+        "(window.SFC_DATA_BY_YEAR = window.SFC_DATA_BY_YEAR || {})["
+        + str(YEAR)
+        + "] = "
+        + json.dumps(data, separators=(",", ":"))
+        + ";\n",
         encoding="utf-8",
+    )
+    years = sorted(int(p.stem.split("_")[1]) for p in OUT_DIR.glob("flows_*.js"))
+    (OUT_DIR / "years.js").write_text(
+        f"window.SFC_YEARS = {json.dumps(years)};\n", encoding="utf-8"
     )
     tot_src = {n: outflow[n] / 1e3 for n in ("FED_SRC", "ROW_SRC", "CREDIT")}
     tot_snk = {n: inflow[n] / 1e3 for n in ("FED_SINK", "ROW_SINK", "SAVING")}
     print(
         f"nodes={len(nodes)} links={len(links)} sources($B)={tot_src} sinks($B)={tot_snk}"
     )
-    print(f"wrote {OUT}")
+    print(f"wrote {out}")
 
 
 if __name__ == "__main__":

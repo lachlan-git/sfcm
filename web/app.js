@@ -22,6 +22,9 @@ const SECTOR_COLORS = {
   'Rest of world': '#7f7f7f',
 };
 const color = s => SECTOR_COLORS[s] || '#444';
+const isMod = e => e.ctrlKey || e.metaKey;
+const openInfo = n => { if (n && n.url) window.open(n.url, '_blank', 'noopener'); };
+const INFO_HINT = '<br><i class="muted">Ctrl/⌘-click for more about this node</i>';
 
 // ---- graph data -------------------------------------------------------------------------
 const nodes = DATA.nodes.map(n => ({ ...n, V: 0 }));
@@ -135,7 +138,7 @@ function drawNodes() {
     return g;
   });
   sel.attr('transform', d => `translate(${d.x},${d.y})`)
-    .on('click', (e, d) => selectNode(d.id))
+    .on('click', (e, d) => isMod(e) ? openInfo(d) : selectNode(d.id))
     .on('mousemove', (e, d) => showTip(e, nodeTip(d)))
     .on('mouseleave', hideTip);
   sel.select('circle').attr('r', d => rScale(d.through)).attr('fill', d => color(d.sector))
@@ -223,6 +226,7 @@ function renderPanel(n) {
   document.getElementById('panel').innerHTML = `
     <h3><span class="swatch" style="background:${color(n.sector)}"></span> ${esc(n.name)}</h3>
     <div class="muted">${esc(n.sector)} · ${n.kind}${n.codes.length ? ' · BEA codes: ' + esc(n.codes.slice(0, 12).join(', ')) + (n.codes.length > 12 ? '…' : '') : ''}</div>
+    ${n.url ? `<p><a href="${esc(n.url)}" target="_blank" rel="noopener">More about this node ↗</a></p>` : ''}
     <table>
       <tr><td>Money in / yr</td><td class="num">${fmt(n.in)}</td></tr>
       <tr><td>Money out / yr</td><td class="num">${fmt(n.out)}</td></tr>
@@ -236,7 +240,7 @@ function renderPanel(n) {
     <h4>From (direct)</h4><table>${rows(ins, 'source')}</table>` : ''}
     ${outs.length ? `<h4>Where its money goes (by type)</h4><table>${typesRows(typeSum(outs))}</table>
     <h4>To (direct)</h4><table>${rows(outs, 'target')}</table>` : ''}`;
-  document.querySelectorAll('#panel .link').forEach(el => el.addEventListener('click', () => selectNode(el.dataset.id)));
+  document.querySelectorAll('#panel .link').forEach(el => el.addEventListener('click', e => isMod(e) ? openInfo(byId.get(el.dataset.id)) : selectNode(el.dataset.id)));
   document.getElementById('add-through').addEventListener('click', () => addThrough(n.id));
 }
 
@@ -249,7 +253,7 @@ function showTip(e, html) {
   tip.style.top = (e.clientY + 14) + 'px';
 }
 function hideTip() { tip.style.display = 'none'; }
-const nodeTip = d => `<b>${esc(d.name)}</b><br>${esc(d.sector)} (${d.kind})<br>in ${fmt(d.in)} · out ${fmt(d.out)}<br>V = ${d.V.toFixed(2)} · ${d.degree} counterparties`;
+const nodeTip = d => `<b>${esc(d.name)}</b><br>${esc(d.sector)} (${d.kind})<br>in ${fmt(d.in)} · out ${fmt(d.out)}<br>V = ${d.V.toFixed(2)} · ${d.degree} counterparties${d.url ? INFO_HINT : ''}`;
 function linkTip(l, f, dir) {
   const types = Object.entries(l.types).slice(0, 5).map(([k, v]) => `${esc(k)}: ${fmt(v)}`).join('<br>');
   const attributed = f !== undefined && Math.abs(f - l.v) > 1e-6
@@ -385,7 +389,9 @@ function drawTraceChart() {
     .attr('x1', s => x(s.x0)).attr('x2', s => x(Math.max(s.x1, s.x0 + xMax / 800)))
     .attr('y1', s => y(s.node.V)).attr('y2', s => y(s.node.V))
     .attr('stroke', s => color(s.node.sector)).attr('stroke-width', 5).attr('stroke-linecap', 'round')
-    .on('mousemove', (e, s) => showTip(e, `<b>#${s.i} ${esc(s.node.name)}</b><br>${esc(s.node.sector)}<br>day ${s.arrive.toFixed(1)} · held ${fmtDays(s.dwell)}<br>V = ${s.node.V.toFixed(2)}${s.next ? `<br>→ ${esc(s.next.name)} (${esc(s.type)})` : ''}`))
+    .style('cursor', 'pointer')
+    .on('click', (e, s) => { if (isMod(e)) openInfo(s.node); })
+    .on('mousemove', (e, s) => showTip(e, `<b>#${s.i} ${esc(s.node.name)}</b><br>${esc(s.node.sector)}<br>day ${s.arrive.toFixed(1)} · held ${fmtDays(s.dwell)}<br>V = ${s.node.V.toFixed(2)}${s.next ? `<br>→ ${esc(s.next.name)} (${esc(s.type)})` : ''}${s.node.url ? INFO_HINT : ''}`))
     .on('mouseleave', hideTip);
   drawTraceLabels(chart, segs, x, y, xMax, { left: m.l, right: W - m.r, top: m.t + 2, bottom: H - m.b });
   const leg = chart.append('g').attr('transform', `translate(${m.l + 8},${10})`);
@@ -526,7 +532,8 @@ function drawTraceTable() {
   document.getElementById('trace-table').innerHTML = `<table>
     <thead><tr><th>#</th><th>Node</th><th>Sector</th><th>Arrived (day)</th><th>Held for</th><th>Paid to</th><th>Transaction type</th><th>P(this route)</th><th>ΔV</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
-  document.querySelectorAll('#trace-table .link').forEach(el => el.addEventListener('click', () => {
+  document.querySelectorAll('#trace-table .link').forEach(el => el.addEventListener('click', e => {
+    if (isMod(e)) return openInfo(byId.get(el.dataset.id));
     selectNode(el.dataset.id);
     document.getElementById('top').scrollIntoView({ behavior: 'smooth' });
   }));
@@ -597,10 +604,18 @@ function rebuild() {
 }
 
 function init() {
-  document.getElementById('year').textContent = DATA.meta.year;
+  const ys = document.getElementById('year-select');
+  ys.innerHTML = (window.SFC_YEARS || [DATA.meta.year]).map(y =>
+    `<option value="${y}"${y === DATA.meta.year ? ' selected' : ''}>${y}${y === DATA.meta.year && DATA.meta.nowcast ? ' (nowcast)' : ''}</option>`).join('');
+  ys.addEventListener('change', () => {
+    const u = new URL(location.href);
+    u.searchParams.set('year', ys.value);
+    location.href = u.toString();
+  });
   document.title = `Where US dollars are born, live and die (${DATA.meta.year})`;
   document.getElementById('meta').textContent =
-    `${DATA.meta.nodeCount} nodes (${DATA.meta.industryNodes} industry nodes) · ${DATA.meta.linkCount.toLocaleString()} payment links · ${DATA.meta.units} · BEA data`;
+    `${DATA.meta.nodeCount} nodes (${DATA.meta.industryNodes} industry nodes) · ${DATA.meta.linkCount.toLocaleString()} payment links · ${DATA.meta.units} · BEA & Fed data` +
+    (DATA.meta.nowcast ? ' · NOWCAST: industry tables projected from 2023 (see Assumptions)' : '');
   document.getElementById('legend').innerHTML = Object.entries(SECTOR_COLORS)
     .map(([s, c]) => `<span class="chip"><span class="swatch" style="background:${c}"></span>${esc(s)}</span>`).join('');
   document.getElementById('node-list').innerHTML = [...nodes].sort((a, b) => a.name.localeCompare(b.name))

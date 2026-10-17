@@ -1,8 +1,10 @@
 import json
+import sys
 from pathlib import Path
 
-txt = Path("web/data/flows.js").read_text(encoding="utf-8")
-d = json.loads(txt[txt.index("{") : txt.rstrip().rindex("}") + 1])
+year = sys.argv[1] if len(sys.argv) > 1 else "2025"
+txt = Path(f"web/data/flows_{year}.js").read_text(encoding="utf-8")
+d = json.loads(txt[txt.index("= {") + 2 : txt.rstrip().rindex("}") + 1])
 names = {n["id"]: n["name"] for n in d["nodes"]}
 cred = sorted(
     [(l["v"], names[l["t"]]) for l in d["links"] if l["s"] == "CREDIT"], reverse=True

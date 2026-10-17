@@ -6,12 +6,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
-<script src="data/flows.js"></script>
+<script src="data/years.js"></script>
 </head>
 <body>
 <header>
   <div>
-    <h1>US money flows, <span id="year"></span> &mdash; creation &rarr; circulation &rarr; destruction</h1>
+    <h1>US money flows, <select id="year-select" title="Data year"></select> &mdash; creation &rarr; circulation &rarr; destruction</h1>
     <div id="meta" class="muted"></div>
   </div>
   <button id="btn-assumptions" class="primary">Assumptions &amp; sources</button>
@@ -35,7 +35,7 @@
 
 <main id="top">
   <div id="graph-wrap"><svg id="graph"></svg></div>
-  <aside id="panel"><p class="muted">Click a node to see where its money comes from (blue) and where it goes (orange). Hover a link for amounts. Scroll to zoom, drag to pan.</p></aside>
+  <aside id="panel"><p class="muted">Click a node to see where its money comes from (blue) and where it goes (orange). Ctrl/&#8984;-click a node to open a page describing it. Hover a link for amounts. Scroll to zoom, drag to pan.</p></aside>
 </main>
 
 <section id="tracer">
@@ -72,6 +72,22 @@
   </div>
 </div>
 
-<script src="app.js"></script>
+<script>
+// load the chosen year's data (?year=YYYY, validated against the manifest), then the app
+(function () {
+  const years = window.SFC_YEARS || [];
+  const q = Number(new URLSearchParams(location.search).get('year'));
+  const year = years.includes(q) ? q : years[years.length - 1];
+  const s = document.createElement('script');
+  s.src = `data/flows_${year}.js`;
+  s.onload = () => {
+    window.SFC_DATA = window.SFC_DATA_BY_YEAR[year];
+    const a = document.createElement('script');
+    a.src = 'app.js';
+    document.body.appendChild(a);
+  };
+  document.body.appendChild(s);
+})();
+</script>
 </body>
 </html>

@@ -2,6 +2,7 @@
 body { margin: 0; font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #222; background: #fafafa; }
 header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: #fff; border-bottom: 1px solid #ddd; }
 h1 { font-size: 18px; margin: 0; }
+#year-select { font: inherit; padding: 0 2px; border: 1px solid #bbb; border-radius: 4px; cursor: pointer; }
 h2 { font-size: 16px; margin: 0 0 8px; }
 .muted { color: #666; }
 button { font: inherit; padding: 4px 10px; border: 1px solid #bbb; background: #fff; border-radius: 4px; cursor: pointer; }

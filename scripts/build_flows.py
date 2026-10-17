@@ -1337,7 +1337,6 @@ def main():
         'repayment", deficits are drawn from "Bank credit & dis-saving". So for every non-source/sink '
         "node, dollars in = dollars out, which is what makes the random-dollar walk well defined.",
     )
-
     # dwell times
     ind_out_total = sum(outflow[n] for n in node_meta)
     dwell = {}

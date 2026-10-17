@@ -461,7 +461,9 @@ def main():
     bank_code = find("Monetary authorities")
     nonbank_code = find("Nondepository credit")
     comp_io_total = float(sum(VA["V00100"][j] for j in ind_keep))
-    comp_fed = float(sum(VA["V00100"][j] for j in ind_keep if gov_level(inds[j]) == "federal"))
+    comp_fed = float(
+        sum(VA["V00100"][j] for j in ind_keep if gov_level(inds[j]) == "federal")
+    )
     comp_nonfed = comp_io_total - comp_fed
     # NIPA's (negative) imputed DB contributions are non-cash, so use actual contributions only
     employer_insurance = nipa["emp_pension"] - (nipa["pen_emp"] + nipa["pen_imp_emp"])
@@ -767,7 +769,12 @@ def main():
             "federal employee & military pensions",
             nipa["fpen_benefits"] * hh["benefits"][h],
         )
-    add("PEN_SRC", "I:" + funds_code, "pension plan administrative fees", nipa["pen_admin"])
+    add(
+        "PEN_SRC",
+        "I:" + funds_code,
+        "pension plan administrative fees",
+        nipa["pen_admin"],
+    )
     assume(
         "Pensions",
         "Pension funds are a store of money for the future, so (like the Federal govt and RoW) they are "
@@ -880,9 +887,9 @@ def main():
             "output": float(sum(output[j] for j in members)),
         }
     if "I:" + funds_code in node_meta:
-        node_meta["I:" + funds_code]["name"] = (
-            "Funds, trusts & other financial vehicles (mutual funds, trusts, fund admin)"
-        )
+        node_meta["I:" + funds_code][
+            "name"
+        ] = "Funds, trusts & other financial vehicles (mutual funds, trusts, fund admin)"
     assume(
         "Industry nodes",
         f"The {len(ind_keep)} BEA detail industries are reduced to {len(node_meta)} nodes: the {k} "

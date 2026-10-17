@@ -569,15 +569,56 @@ function renderChips() {
 
 // ---- assumptions modal ----------------------------------------------------------------
 const UI_ASSUMPTIONS = [
-  ['Potential (x-axis)', 'Each node gets a scalar potential V found by least squares: minimise Σ w_e (V_source − V_target − 1)² over all transaction edges (a graph-Laplacian solve, L·V = b with b_i = Σ out-weights − Σ in-weights; a.k.a. HodgeRank / SpringRank). With unit weights every counterparty relationship counts once regardless of size, so sources (pure out-flow) float up and sinks fall down. The default is $-flow weights, where each edge counts in proportion to its annual dollar flow, so big flows dominate the ordering. Only edges ≥ the "min edge" value enter the solve; changing it, or switching to log($)/$ weights, changes the ordering. V is only defined up to a constant (mean set to 0). Money flowing to a lower V is "downhill".'],
-  ['Layout', 'Nodes are sorted by V and cut into equal-count columns (left = highest V). Within a column, nodes are sorted top-to-bottom by connectivity = number of counterparties with an edge ≥ min edge (ties broken by throughput). Alternate rows are nudged right for legibility. Column labels show the mean V of that column. Circle area ∝ annual throughput; sources have black outlines, sinks dashed.'],
-  ['Path highlighting', 'Clicking a node attributes flows proportionally ("money is fungible inside a node"): e.g. depth 2 downstream shows the node\'s outflows, plus the outflows of each recipient scaled by the share of that recipient\'s spending that came from the selected node. Upstream is the mirror image using inflow shares. Flows below 0.2% of the node\'s total are hidden.'],
-  ['Random dollar', 'A dollar is a random walk on the annual flow network: at each node the next payee is chosen with probability = edge flow / node outflow; the time held is exponential with the node\'s mean holding time. Starting points are creation events chosen with probability ∝ their annual outflow. When you require nodes to be visited, the walk is sampled backwards from the first required node using inflow shares (exact because every node balances) and forwards from it, then rejection-sampled for the remaining nodes and creation-source filter. Transaction type is drawn ∝ the amounts of each type on that edge.'],
-  ['What "creation" and "destruction" mean here', 'Federal spending creates money and federal taxes destroy it (MMT view; Treasury/Fed consolidated except the Fed\'s own interest income and remittances). Export receipts are dollars entering the domestic economy, import payments are dollars leaving it (they are not destroyed globally). Pension contributions leave circulation into retirement funds and pension benefits re-enter it. Bank credit and net saving are the private ("horizontal") creation/destruction channels that close every node\'s budget.'],
+  ['Potential (x-axis)', [
+    'Each node has a potential V. The page calculates V by least squares.',
+    'It makes Σ w_e (V_source − V_target − 1)² as small as possible over all links.',
+    'This is a graph-Laplacian solution: L·V = b, where b_i = Σ out-weights − Σ in-weights. Other names for this method are HodgeRank and SpringRank.',
+    'With unit weights, each link counts one time, independent of its size. Sources go up and sinks go down.',
+    'The default is $-flow weights. Each link counts in proportion to its annual dollar flow. Thus, large flows set the order.',
+    'Only links equal to or more than the "min edge" value are in the calculation.',
+    'If you change the min edge or the weights, the order changes.',
+    'V has no fixed zero. The page sets the mean of V to 0.',
+    'Money that goes to a lower V goes "downhill".',
+  ]],
+  ['Layout', [
+    'The page sorts nodes by V. It puts them in columns with the same number of nodes. The left column has the highest V.',
+    'In each column, the page sorts nodes from top to bottom by connectivity.',
+    'Connectivity is the number of counterparties with a link equal to or more than the min edge.',
+    'If two nodes have the same connectivity, the node with more throughput goes first.',
+    'Alternate rows move a little to the right. This makes the labels easier to read.',
+    'Column labels show the mean V of the column.',
+    'Circle area is proportional to annual throughput. Sources have black outlines. Sinks have dashed outlines.',
+  ]],
+  ['Path highlights', [
+    'When you click a node, the page divides flows by proportion. All money in a node is the same (fungible).',
+    'Depth 2 downstream shows the outflows of the node. It also shows the outflows of each recipient, multiplied by the share that came from the selected node.',
+    'Upstream uses the same method with inflow shares.',
+    'The page does not show flows of less than 0.2% of the node total.',
+    'Ctrl-click (⌘-click on Mac) a node to open a page about it in a new tab.',
+  ]],
+  ['Random dollar', [
+    'A dollar does a random walk on the annual flow network.',
+    'At each node, the probability of each payee is equal to the link flow divided by the node outflow.',
+    'The time at each node is random. It comes from an exponential distribution with the mean holding time of the node.',
+    'The start is a creation event. The probability of each event is proportional to its annual outflow.',
+    'If you select nodes that the dollar must visit, the page samples backwards from the first selected node with inflow shares. This is exact, because each node balances.',
+    'The page then samples forwards from that node.',
+    'The page rejects paths that do not visit the other selected nodes or do not start at the selected source.',
+    'The probability of each transaction type is proportional to the amount of that type on the link.',
+    'Ctrl-click a line on the trace chart, or a node name in the trace table, to open a page about that node.',
+  ]],
+  ['What "creation" and "removal" mean', [
+    'Federal spending makes money. Federal taxes remove money. This is the MMT view.',
+    'The page combines the Treasury and the Fed, except for the Fed interest income and remittances.',
+    'Export receipts are dollars that come into the domestic economy. Import payments are dollars that go out. These dollars continue to exist in other countries.',
+    'Pension contributions leave circulation and go into retirement funds. Pension benefits come back into circulation.',
+    'Bank credit and net saving are the private ("horizontal") ways to make and remove money. They close the budget of each node.',
+  ]],
 ];
+const bullets = pts => `<ul>${pts.map(p => `<li>${esc(p)}</li>`).join('')}</ul>`;
 function renderAssumptions() {
-  const a = DATA.assumptions.map(x => `<h4>${esc(x.title)}</h4><p>${esc(x.text)}</p>`).join('');
-  const u = UI_ASSUMPTIONS.map(([t, x]) => `<h4>${esc(t)}</h4><p>${esc(x)}</p>`).join('');
+  const a = DATA.assumptions.map(x => `<h4>${esc(x.title)}</h4>${x.points ? bullets(x.points) : `<p>${esc(x.text)}</p>`}`).join('');
+  const u = UI_ASSUMPTIONS.map(([t, pts]) => `<h4>${esc(t)}</h4>${bullets(pts)}`).join('');
   const s = DATA.sources.map(x => `<li><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a></li>`).join('');
   const totals = ['FED_SRC', 'ROW_SRC', 'CREDIT', 'PEN_SRC', 'FED_SINK', 'ROW_SINK', 'SAVING', 'PEN_SINK'].map(id => {
     const n = byId.get(id);
@@ -585,11 +626,12 @@ function renderAssumptions() {
   }).join('');
   const nipa = Object.entries(DATA.nipa).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">$${v.toLocaleString()}B</td></tr>`).join('');
   document.getElementById('assumptions').innerHTML = `
+    <p>This tab uses ASD-STE100 Simplified Technical English.</p>
     <h3>Data construction (build_flows.py)</h3>${a}
-    <h3>Visualisation & tracing (app.js)</h3>${u}
-    <h3>Creation / destruction totals in this network</h3><table>${totals}</table>
-    <h3>NIPA ${DATA.meta.year} control totals used</h3><table>${nipa}</table>
-    <h3>Sources</h3><ul>${s}</ul>`;
+    <h3>Visualisation and trace (app.js)</h3>${u}
+    <h3>Creation and removal totals in this network</h3><table>${totals}</table>
+    <h3>NIPA ${DATA.meta.year} control totals</h3><table>${nipa}</table>
+    <h3>Sources</h3><p>Each link opens the source data in a new tab.</p><ul>${s}</ul>`;
 }
 
 // ---- wiring ---------------------------------------------------------------------------

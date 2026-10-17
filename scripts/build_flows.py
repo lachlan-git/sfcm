@@ -208,6 +208,7 @@ NIPA_SERIES = {
 }
 
 ASSUMPTIONS = []
+NOTES = {}
 
 # BEA Fixed Assets industry code(s) -> BEA IO detail-code prefixes (longest prefix wins)
 FA_PREFIXES = {
@@ -379,8 +380,8 @@ def asset_commodities(asset):
     return ASSET_COMMODITIES.get(asset, [])
 
 
-def assume(title, text):
-    ASSUMPTIONS.append({"title": title, "text": text})
+def assume(title, points):
+    ASSUMPTIONS.append({"title": title, "points": [p for p in points if p]})
 
 
 def code_str(v):
@@ -624,6 +625,7 @@ def load_household_shares():
             (float(m[1]) + float(m[2])) / 2 if m else pd.to_numeric(v, errors="coerce")
         )
 
+    NOTES["dpi_ranges"] = bool(d["Value"].astype(str).str.startswith("[").any())
     d["Value"] = d["Value"].map(num).astype(float)
 
     dpi = dict(
@@ -803,7 +805,7 @@ def main():
     hh = load_household_shares()
     z1 = load_z1()
 
-    scale_note = ""
+    scale_points = []
     if YEAR != IO_DETAIL_YEAR:
         io_year = min(YEAR, SUMMARY_LAST)
         su, sm = load_summary("Use", io_year), load_summary("Make", io_year)
@@ -825,47 +827,104 @@ def main():
         VA = {c: VAm[k] for k, c in enumerate(va_codes)}
         VA["T008"] = Z.sum(0) + VAm.sum(0)
         lost = (l1 + l2 + l3 + l4) / (t1 + t2 + t3 + t4)
-        scale_note = (
-            f" BEA only publishes the 402-industry detail for {IO_DETAIL_YEAR}; for {YEAR} it publishes "
-            "~71-industry summary Use and Make tables. Every block of the detail tables that falls in one "
-            f"summary cell (summary commodity x summary industry/final-use column) is rescaled so it sums "
-            f"exactly to BEA's {YEAR} summary value, keeping the {IO_DETAIL_YEAR} split inside the block. "
-            f"So industry totals, value added, final demand and imports are {YEAR} values; only the "
-            f"within-summary detail mix is from {IO_DETAIL_YEAR}. Summary cells with no {IO_DETAIL_YEAR} "
-            f"detail counterpart are dropped ({lost:.2%} of {YEAR} table value)."
-        )
+        scale_points = [
+            f"BEA publishes the detailed table only for {IO_DETAIL_YEAR}. For later years, BEA "
+            "publishes only summary tables (approximately 71 industries).",
+            f"The model divides the {IO_DETAIL_YEAR} detailed table into blocks. Each block agrees "
+            "with one cell of the summary table.",
+            f"The model scales each block so that its sum is equal to the {YEAR} summary value.",
+            f"Thus, the totals for industries, value added, final demand and imports are {YEAR} "
+            f"values. Only the split inside each block comes from {IO_DETAIL_YEAR}.",
+            f"Some summary cells have no {IO_DETAIL_YEAR} detail. The model does not use these "
+            f"cells ({lost:.2%} of the table value).",
+        ]
         if YEAR > SUMMARY_LAST:
             SOURCE_YEARS["input-output structure (summary)"] = SUMMARY_LAST
-            scale_note += (
-                f" NOWCAST: BEA's summary IO tables stop at {SUMMARY_LAST}, so the {YEAR} summary tables "
-                f"are projected from {SUMMARY_LAST}: each industry's intermediate-input column is scaled "
-                f"by its growth in (gross output - value added) from BEA GDP-by-industry; value-added "
-                f"rows (compensation, taxes on production, operating surplus) are set to BEA's {YEAR} "
-                "GDP-by-industry values; each final-demand column is scaled by its NIPA aggregate "
-                "(PCE, equipment, IP products, structures, residential, inventories, exports, imports, "
-                "federal defense / nondefense, state & local); Make-table rows are scaled by each "
-                f"industry's gross-output growth. The commodity mix inside each column is held at "
-                f"{SUMMARY_LAST} shares, so price/mix shifts within an industry since {SUMMARY_LAST} are "
-                "not captured."
-            )
+            scale_points += [
+                f"PROJECTION: BEA summary tables stop at {SUMMARY_LAST}. Thus, the {YEAR} summary "
+                f"tables are a projection from the {SUMMARY_LAST} tables.",
+                "All scale factors come from published BEA data. No scale factor is a hand-entered "
+                "number.",
+                "The model scales the purchases of each industry by the growth of its gross output "
+                "minus its value added. Source: BEA GDP by Industry, tables TGO105 and TVA105.",
+                "The model sets the wages, taxes on production and operating surplus of each "
+                f"industry to the BEA {YEAR} values. Source: BEA tables TVA105 and TVA112.",
+                "BEA does not show some value-added parts for some industries. For these "
+                "industries, the model scales each part by the growth of total value added.",
+                "The model scales each final-demand column by the growth of its NIPA total.",
+                "These columns are: consumer spending, equipment, intellectual property, "
+                "nonresidential structures, housing, inventories, exports, imports, federal "
+                "defense, federal nondefense, and state and local government.",
+                "The model scales the output of each industry in the Make table by the growth of its "
+                "gross output.",
+                f"The product mix of each purchase column stays at {SUMMARY_LAST} shares.",
+                f"The detail inside each summary cell stays at {IO_DETAIL_YEAR} shares. Thus, two "
+                "detailed industries in the same summary group grow at the same rate.",
+                "The model does not balance the projected table again. The bank-credit and "
+                "net-saving nodes get the differences.",
+            ]
     SOURCE_YEARS["input-output structure (detail)"] = IO_DETAIL_YEAR
 
     assume(
-        "Base year and core data",
-        f"Everything is a snapshot of annual flows in {YEAR}. Inter-industry flows come from the BEA "
-        "detailed (402-industry) Use and Make tables, before redefinitions, producer prices."
-        + scale_note
-        + " Government, tax, transfer and income totals come from NIPA tables 1.12, 2.1, 3.2, 3.3, "
-        "3.12, 4.1; pension cash flows from NIPA 7.20 (all plans) and 7.23 (federal plans). Investment "
-        "by industry and asset type, and residential investment by tenure, come from BEA Fixed Assets "
-        "detailed estimates. Household splits come from BEA Distribution of Personal Income "
-        "(equivalized DPI ranking) and the BEA/BLS joint DPI-PCE distribution. Deposit balances come "
-        "from the Fed's Financial Accounts (Z.1) and Distributional Financial Accounts. Units shown are "
-        "$ billions per year. Data years used: "
-        + ", ".join(
-            f"{k} {v}" for k, v in {**SOURCE_YEARS, "everything else": YEAR}.items()
-        )
-        + ". Different BEA tables are on slightly different vintages, so totals can differ by a few percent.",
+        "Base year and data sources",
+        [
+            f"This model shows the money flows for one year: {YEAR}.",
+            "All values are in billions of US dollars ($B) for each year.",
+            "The flows between industries come from the BEA Use and Make tables. These tables use "
+            "producer prices, before redefinitions.",
+            "Government, tax, transfer and income totals come from NIPA tables 1.12, 2.1, 3.2, 3.3, "
+            "3.12 and 4.1.",
+            "Pension cash flows come from NIPA table 7.20 (all plans) and table 7.23 (federal plans).",
+            "Investment by industry and by asset type comes from the BEA Fixed Assets detailed "
+            "estimates.",
+            "Household groups come from the BEA Distribution of Personal Income and the BEA/BLS "
+            "joint DPI-PCE distribution.",
+            "Deposit balances come from the Federal Reserve Financial Accounts (Z.1) and "
+            "Distributional Financial Accounts (DFA).",
+            "BEA tables have different release dates. Thus, some totals can be different by a few "
+            "percent.",
+        ],
+    )
+    dpi_year = SOURCE_YEARS["distribution of personal income"]
+    joint_year = SOURCE_YEARS["joint DPI-PCE distribution"]
+    fed_audited = "tsy" in FED_FINANCIALS[YEAR]
+    assume(
+        "Data years and scaling",
+        [
+            "Data years in this build: "
+            + ", ".join(
+                f"{k} {v}" for k, v in {**SOURCE_YEARS, "all other data": YEAR}.items()
+            )
+            + ".",
+            (
+                f"For {YEAR}, the model uses the BEA detailed table directly. No scaling is "
+                "necessary."
+                if YEAR == IO_DETAIL_YEAR
+                else None
+            ),
+            *scale_points,
+            f"Taxes, benefits, income and pension totals come from {YEAR} NIPA data.",
+            f"Deposit balances come from {YEAR} Z.1 and DFA data.",
+            f"Investment by industry and asset type comes from {YEAR} Fixed Assets data.",
+            f"Income shares by household group come from {dpi_year} data."
+            + (" This is the latest year that BEA publishes." if dpi_year < YEAR else ""),
+            (
+                f"For {dpi_year}, BEA gives the top 1% and top 5% shares as ranges. The model uses "
+                "the middle of each range."
+                if NOTES.get("dpi_ranges")
+                else None
+            ),
+            f"Spending shares by household group come from {joint_year} data."
+            + (" This is the latest year that BEA publishes." if joint_year < YEAR else ""),
+            (
+                f"Federal Reserve figures come from the audited Federal Reserve Banks financial "
+                f"statements for {YEAR}. The values are copied exactly."
+                if fed_audited
+                else f"Federal Reserve figures for {YEAR} come from the Federal Reserve Board press "
+                "release. The model divides securities income between Treasury and mortgage-backed "
+                "securities by the Z.1 holdings."
+            ),
+        ],
     )
 
     # Drop imputed / non-monetary items
@@ -875,12 +934,16 @@ def main():
     ooh = F[com_idx["531HSO"], fdi["F01000"]]
     assume(
         "Imputations removed",
-        f'Owner-occupied housing (531HSO: imputed rent homeowners "pay themselves", ${ooh/1e3:,.0f}B of PCE) '
-        "is removed, "
-        "along with scrap, used goods and the rest-of-world adjustment rows. Rental income of persons "
-        "(mostly that imputation) is not paid out; real-estate operating surplus is retained instead. "
-        "Other imputations embedded in BEA data (e.g. imputed financial services, employer-paid "
-        "benefits in kind) are NOT removed.",
+        [
+            "The model removes owner-occupied housing (code 531HSO).",
+            'This item is the rent that home owners "pay to themselves". It is '
+            f"${ooh/1e3:,.0f}B of consumer spending, but no money moves.",
+            "The model also removes scrap, used goods and the rest-of-world adjustment rows.",
+            "The model does not pay out the rental income of persons, because most of it is this "
+            "imputed rent. The real-estate operating surplus stays with the industry.",
+            "The model does not remove other BEA imputations. Examples are imputed financial "
+            "services and benefits in kind from employers.",
+        ],
     )
     for c in drop:
         if c in com_idx:
@@ -896,8 +959,11 @@ def main():
             D[inds.index(c), :] = 0
     assume(
         "Who gets paid for a commodity",
-        "A purchase of commodity c is paid to domestic industries in proportion to their production of "
-        "c in the BEA Make table (market shares), after removing the imported share.",
+        [
+            "When a buyer purchases a commodity, the model removes the imported part first.",
+            "The model pays the domestic part to each industry in proportion to its production of "
+            "that commodity. Source: BEA Make table (market shares).",
+        ],
     )
 
     imports = np.clip(-F[:, fdi["F05000"]], 0, None)
@@ -912,10 +978,15 @@ def main():
         mshare[com_idx["S00300"]] = 1.0
     assume(
         "Imports",
-        "For each commodity the import share = imports / domestic (non-export) use. Every domestic buyer "
-        "of that commodity (industries, households, governments, investors) sends that share of its "
-        "payment to the Rest of World (RoW). Exports are assumed to be 100% domestically produced. "
-        "Noncomparable imports are 100% imported.",
+        [
+            "For each commodity, the import share is equal to imports divided by domestic use. "
+            "Domestic use does not include exports.",
+            "Each domestic buyer of the commodity sends that share of its payment to the Rest of "
+            "World (RoW).",
+            "Domestic buyers are industries, households, governments and investors.",
+            "All exports are made in the US.",
+            "Noncomparable imports are 100% imported.",
+        ],
     )
 
     flows = defaultdict(lambda: defaultdict(float))
@@ -974,13 +1045,20 @@ def main():
     buy("I:" + insurer_code, ins_vec, "insurance claims paid to providers")
     pce_hh = pce - gov_health_vec - ins_vec
     assume(
-        "Medicare, Medicaid & private health insurance",
-        f'NIPA records Medicare (${nipa["medicare"]/1e3:.0f}B) and Medicaid (${nipa["medicaid"]/1e3:.0f}B) '
-        "as transfers to persons, but the money actually goes to providers. Here the Federal government "
-        "(Medicare) and State & local (Medicaid) pay ambulatory care, hospitals and nursing facilities "
-        f"(NAICS 621-623) directly, covering {g:.0%} of PCE on those services. Employer health-insurance "
-        f"contributions go to insurers, who pay providers claims covering a further {gi:.0%}. Households "
-        "pay the remainder out of pocket. The government amounts are removed from household benefits.",
+        "Medicare, Medicaid and private health insurance",
+        [
+            f'NIPA records Medicare (${nipa["medicare"]/1e3:.0f}B) and Medicaid '
+            f'(${nipa["medicaid"]/1e3:.0f}B) as transfers to persons. But the money goes to health '
+            "providers.",
+            "In this model, the Federal government pays Medicare directly to providers. State and "
+            "local governments pay Medicaid directly to providers.",
+            "Providers are ambulatory care, hospitals and nursing facilities (NAICS 621-623).",
+            f"Government payments cover {g:.0%} of consumer spending on these services.",
+            "Employer health-insurance contributions go to insurers. Insurers pay claims to "
+            f"providers for a further {gi:.0%}.",
+            "Households pay the remainder directly.",
+            "The model removes the government amounts from household benefits.",
+        ],
     )
 
     # Households: PCE split across income groups with tilts + RAS
@@ -997,20 +1075,31 @@ def main():
         buy(hh_ids[h], X[:, h], "consumer purchases")
     assume(
         "Household spending mix",
-        "Total PCE per household group follows the BEA/BLS joint DPI-PCE distribution (2017). The mix "
-        "of what each group buys starts from hand-entered budget-share tilts by income quintile "
-        "(approximating BLS Consumer Expenditure Survey 2017; e.g. bottom quintile spends ~1.6x the "
-        "average share on rent, top quintile ~1.35x on travel) and is then RAS-balanced so commodity "
-        "totals match BEA PCE exactly. Commodity->category mapping is by NAICS prefix. Top 10% groups "
-        "all use the top-quintile tilt.",
+        [
+            "The total consumer spending of each household group follows the BEA/BLS joint "
+            f"DPI-PCE distribution ({joint_year}).",
+            "The mix of purchases of each group starts from hand-entered tilts by income quintile.",
+            "These tilts are approximate. They use the BLS Consumer Expenditure Survey 2017 "
+            "budget shares.",
+            "For example, the bottom quintile spends approximately 1.6 times the average share on "
+            "rent. The top quintile spends approximately 1.35 times the average share on travel.",
+            "A RAS balance then makes the commodity totals agree exactly with BEA consumer spending.",
+            "The model sorts commodities into spending categories by NAICS prefix.",
+            "All groups in the top 10% use the tilt of the top quintile.",
+        ],
     )
     assume(
         "Household groups",
-        "Households are 12 groups ranked by equivalized disposable personal income: deciles 1-9, "
-        "90-95%, 95-99%, top 1% (BEA Distribution of Personal Income). Income components (wages, "
-        "dividends, taxes...) are only published by decile, so the top decile is split using the "
-        "DPI split (this understates the top 1%'s share of capital income). BEA does not publish a joint "
-        "split by household type (e.g. with/without children), so household type is not modelled.",
+        [
+            "Households are in 12 groups. BEA ranks them by equivalized disposable personal "
+            "income (DPI).",
+            "The groups are deciles 1 to 9, 90-95%, 95-99% and the top 1%.",
+            "BEA publishes income parts (wages, dividends, taxes and other parts) only by decile.",
+            "Thus, the model divides the top decile with the DPI split. This gives a top 1% share "
+            "of capital income that is too low.",
+            "BEA does not publish a split by household type (for example, with or without "
+            "children). The model does not show household type.",
+        ],
     )
 
     # Government purchases
@@ -1117,38 +1206,53 @@ def main():
             add("ROW_SRC", "I:" + inds[a], "export sales", float(to_ind[a]))
     assume(
         "Government purchases",
-        "Federal consumption + gross investment (defense & nondefense) is paid by the Federal "
-        'spending node; this includes buying the output of "Federal general government" industries, '
-        "which then pay federal employees. Same for State & local. Govt purchases are at producer prices.",
+        [
+            "The Federal spending node pays for federal consumption and gross investment "
+            "(defense and nondefense).",
+            'This includes purchases from the "Federal general government" industries. These '
+            "industries then pay federal employees.",
+            "State and local purchases use the same method.",
+            "Government purchases use producer prices.",
+        ],
     )
     assume(
         "Investment",
-        "Each industry pays for its own capital goods - there is no investment pool. BEA Fixed Assets "
-        f"detailed estimates for {YEAR} give private nonresidential investment by {len(fa_members)} "
-        "fixed-asset industries x ~95 asset types (e.g. manufacturing structures, mining & oilfield "
-        "machinery, light trucks, prepackaged software, R&D). Each asset type is bridged to the IO "
-        "commodities it is bought as (hand-made concordance by NAICS code, e.g. 'mining & oilfield "
-        "machinery' -> 333130, 'manufacturing structures' -> 233230, all R&D -> 541700); trade and "
-        "transport margins, installation and brokers' fees are shared across all asset types. A RAS "
-        "balance makes the asset x commodity bridge match the IO investment columns (F02E00, F02S00, "
-        "F02N00) exactly and the fixed-asset type totals as closely as the concordance allows "
-        "(remaining mismatch vs fixed-asset totals: "
-        + ", ".join(f"{k.lower()} {v:.1%}" for k, v in bridge_gap.items())
-        + "). So each industry buys its own mix of capital goods, scaled to the IO totals. Within a "
-        "fixed-asset industry the amount is split among its IO detail industries by gross output. "
-        "Residential investment is split by "
-        f"tenure from BEA's residential detail: {owner_share:.0%} owner-occupied, paid by household "
-        "groups in proportion to their wage shares (a proxy for who buys/renovates homes), and the rest "
-        "(rental housing) paid by the tenant-occupied housing industry. Positive inventory change is paid "
-        "by goods-producing and trade industries in proportion to output; draw-downs are ignored. "
-        "Retained earnings simply stay with each industry: if an industry invests more than it keeps it "
-        "draws on bank credit, if less it saves. Purchases an industry makes from itself (e.g. construction "
-        "building its own structures) are internal and not shown."
-        + (
-            f" Industries without fixed-asset data: {', '.join(unmatched)}."
-            if unmatched
-            else ""
-        ),
+        [
+            "Each industry pays for its own capital goods. The model does not use an investment "
+            "pool.",
+            f"BEA Fixed Assets detailed estimates for {YEAR} give private nonresidential "
+            f"investment for {len(fa_members)} fixed-asset industries and approximately 95 asset "
+            "types.",
+            "Examples of asset types are manufacturing structures, mining and oilfield machinery, "
+            "light trucks, prepackaged software and R&D.",
+            "A hand-made concordance by NAICS code connects each asset type to IO commodities. "
+            "For example, all R&D goes to commodity 541700.",
+            "All asset types share the trade and transport margins, installation costs and broker "
+            "fees.",
+            "A RAS balance makes this bridge agree exactly with the IO investment columns "
+            "(F02E00, F02S00, F02N00).",
+            "The remaining difference from the fixed-asset totals is: "
+            + ", ".join(f"{k.lower()} {v:.1%}" for k, v in bridge_gap.items())
+            + ".",
+            "In each fixed-asset industry, the model divides the amount among its IO detail "
+            "industries by gross output.",
+            "The model divides residential investment by tenure, from the BEA residential detail. "
+            f"{owner_share:.0%} is owner-occupied.",
+            "Household groups pay for owner-occupied homes in proportion to their wage shares. This "
+            "is a proxy for who buys and repairs homes.",
+            "The tenant-occupied housing industry pays for rental housing.",
+            "Goods-producing and trade industries pay for inventory increases in proportion to "
+            "their output. The model ignores inventory decreases.",
+            "Retained earnings stay with each industry. If an industry invests more than it keeps, "
+            "it uses bank credit. If it invests less, it saves.",
+            "Purchases that an industry makes from itself are internal. The model does not show "
+            "them.",
+            (
+                f"Industries without fixed-asset data: {', '.join(unmatched)}."
+                if unmatched
+                else None
+            ),
+        ],
     )
 
     # Value added
@@ -1164,11 +1268,11 @@ def main():
     if "tsy" in fedfin:
         sec_income = fedfin["tsy"] + fedfin["mbs"]
         tsy_share = fedfin["tsy"] / sec_income
-        split_src = "as reported"
+        split_src = "values as reported"
     else:
         sec_income = fedfin["securities_income"]
         tsy_share = z1["fed_tsy"] / (z1["fed_tsy"] + z1["fed_agency"])
-        split_src = "split by its Z.1 holdings"
+        split_src = "divided by Z.1 holdings"
     fed_tsy_int = sec_income * tsy_share
     fed_mbs_int = sec_income - fed_tsy_int
     fed_int_to_frb = fed_tsy_int
@@ -1248,36 +1352,58 @@ def main():
                     add(src, hh_ids[h], typ, amt * hh[dst][h])
     assume(
         "Paying out value added",
-        f"Compensation is split using NIPA 2017 ratios: {w_frac:.1%} wages & salaries to households "
-        f"(by BEA compensation decile shares), {si_frac:.1%} employer social-insurance contributions "
-        f"straight to the Federal govt, employer pension contributions to the pension sink "
-        f"(see Pensions), and employer health/insurance contributions "
-        f"(${employer_insurance/1e3:.0f}B = NIPA employer pension+insurance contributions minus cash "
-        "pension contributions) to insurers, all in proportion to each industry's compensation. Cash "
-        "paid slightly exceeds BEA compensation because NIPA's negative imputed pension contributions "
-        "are excluded; the difference is covered by the credit node. Taxes on production go "
-        f"{tpi_fed_frac:.1%} Federal / rest State & local (NIPA ratio, applied uniformly); subsidies ignored.",
+        [
+            f"The model divides compensation with NIPA {YEAR} ratios.",
+            f"{w_frac:.1%} is wages and salaries. These go to households by BEA compensation decile "
+            "shares.",
+            f"{si_frac:.1%} is employer social-insurance contributions. These go directly to the "
+            "Federal government.",
+            "Employer pension contributions go to the pension sink (refer to Pensions).",
+            f"Employer health and insurance contributions (${employer_insurance/1e3:.0f}B) go to "
+            "insurers. This is NIPA employer pension and insurance contributions minus cash pension "
+            "contributions.",
+            "Each industry pays these items in proportion to its compensation.",
+            "The cash paid is a little more than BEA compensation. The reason is that the model does "
+            "not include the negative imputed pension contributions of NIPA.",
+            "The credit node covers this difference.",
+            f"{tpi_fed_frac:.1%} of taxes on production goes to the Federal government. The "
+            "remainder goes to state and local governments.",
+            "This NIPA ratio is the same for all industries. The model ignores subsidies.",
+        ],
     )
     assume(
         "Paying out operating surplus",
-        f"Private gross operating surplus (${gos_priv_tot/1e3:,.0f}B after removing owner-occupied "
-        "housing) is split in the SAME proportions for every industry: corporate income taxes (federal "
-        f'${nipa["fed_corp"]/1e3:.0f}B, S&L ${nipa["sl_corp"]/1e3:.0f}B), dividends '
-        f'${nipa["pers_div"]/1e3:.0f}B (of which ${nipa["pen_div"]/1e3:.0f}B to pension funds), cash '
-        f"interest ${ind_interest/1e3:.0f}B (personal interest income minus that paid by governments "
-        f'and minus ${nipa["pen_imp_int"]/1e3:.0f}B of non-cash imputed interest on pension claims; '
-        f"${pen_int_nonfed/1e3:.0f}B of it to pension funds), proprietors' income "
-        f'${nipa["proprietors"]/1e3:.0f}B; the remainder '
-        f"(${(gos_priv_tot-payout_total)/1e3:,.0f}B) is retained by the industry to fund its own investment. "
-        "Each income type is distributed to households by its own BEA decile shares. In reality payout "
-        "ratios differ a lot by industry - this is a major simplification. Cross-border dividends / "
-        "interest (other than on federal debt) are not modelled.",
+        [
+            f"Private gross operating surplus is ${gos_priv_tot/1e3:,.0f}B, after the model "
+            "removes owner-occupied housing.",
+            "The model divides it in the SAME proportions for all industries, as follows.",
+            f'Corporate income taxes: federal ${nipa["fed_corp"]/1e3:.0f}B, state and local '
+            f'${nipa["sl_corp"]/1e3:.0f}B.',
+            f'Dividends: ${nipa["pers_div"]/1e3:.0f}B. Of this, ${nipa["pen_div"]/1e3:.0f}B goes '
+            "to pension funds.",
+            f"Cash interest: ${ind_interest/1e3:.0f}B. Of this, ${pen_int_nonfed/1e3:.0f}B goes to "
+            "pension funds.",
+            "Cash interest is personal interest income minus the interest that governments pay. It "
+            f'does not include ${nipa["pen_imp_int"]/1e3:.0f}B of non-cash imputed interest on '
+            "pension claims.",
+            f'Proprietors\' income: ${nipa["proprietors"]/1e3:.0f}B.',
+            f"The remainder (${(gos_priv_tot-payout_total)/1e3:,.0f}B) stays with the industry. The "
+            "industry uses it for its own investment.",
+            "Each income type goes to households by its own BEA decile shares.",
+            "In reality, payout ratios are very different between industries. This is a large "
+            "simplification.",
+            "The model does not show cross-border dividends or interest, except interest on federal "
+            "debt.",
+        ],
     )
     assume(
         "Government industries",
-        "Operating surplus of government industries and enterprises (mostly depreciation) is returned to "
-        "the owning government. Federal: general government, Postal Service, federal enterprises. "
-        "State & local: education, hospitals, other services, enterprises.",
+        [
+            "Government industries and enterprises return their operating surplus to the "
+            "government that owns them. Most of this surplus is depreciation.",
+            "Federal: general government, Postal Service and federal enterprises.",
+            "State and local: education, hospitals, other services and enterprises.",
+        ],
     )
 
     # Households: income from govt, outflows to govt
@@ -1373,30 +1499,45 @@ def main():
     )
     assume(
         "Pensions",
-        "Pension funds are a store of money for the future, so (like the Federal govt and RoW) they are "
-        "split into a SINK and a SOURCE. Cash flows are from NIPA Table 7.20 (all DB + DC plans), with "
-        "federal employee plans (Table 7.23) consolidated into the Federal government. Into the sink: "
-        f"employer contributions ${pen_emp_nonfed/1e3:.0f}B (by industry compensation), employee "
-        f"contributions ${pen_hh_nonfed/1e3:.0f}B (by household wage shares), dividends "
-        f'${nipa["pen_div"]/1e3:.0f}B and monetary interest ${pen_int_nonfed/1e3:.0f}B (from industries '
-        "by operating-surplus share). Out of the source: benefits & withdrawals "
-        f"${pen_ben_nonfed/1e3:.0f}B to households (distributed like government social benefits, a "
-        f'proxy for where retirees sit) and ${nipa["pen_admin"]/1e3:.0f}B of administrative fees to the '
-        '"Funds, trusts & other financial vehicles" industry. Federal: agencies\' contributions '
-        f'(${nipa["fpen_emp"]/1e3:.0f}B) go to the Federal sink, federal pensions '
-        f'(${nipa["fpen_benefits"]/1e3:.0f}B) come from the Federal source, and Treasury interest to '
-        "its own funds is netted out. Pension funds' purchases and sales of existing securities are "
-        "asset swaps between savers and are not modelled.",
+        [
+            "Pension funds keep money for the future. Thus, the model divides them into a SINK and "
+            "a SOURCE, as for the Federal government and RoW.",
+            "Cash flows come from NIPA table 7.20 (all defined-benefit and defined-contribution "
+            "plans).",
+            "Federal employee plans (NIPA table 7.23) are part of the Federal government.",
+            f"Into the sink: employer contributions of ${pen_emp_nonfed/1e3:.0f}B, by industry "
+            "compensation.",
+            f"Into the sink: employee contributions of ${pen_hh_nonfed/1e3:.0f}B, by household "
+            "wage shares.",
+            f'Into the sink: dividends of ${nipa["pen_div"]/1e3:.0f}B and monetary interest of '
+            f"${pen_int_nonfed/1e3:.0f}B, from industries by operating-surplus share.",
+            f"Out of the source: benefits and withdrawals of ${pen_ben_nonfed/1e3:.0f}B to "
+            "households.",
+            "These use the shares of government social benefits, as a proxy for where retirees "
+            "are.",
+            f'Out of the source: administrative fees of ${nipa["pen_admin"]/1e3:.0f}B to the '
+            '"Funds, trusts & other financial vehicles" industry.',
+            f'Federal agency contributions (${nipa["fpen_emp"]/1e3:.0f}B) go to the Federal sink. '
+            f'Federal pensions (${nipa["fpen_benefits"]/1e3:.0f}B) come from the Federal source.',
+            "The model removes the Treasury interest that goes to its own pension funds.",
+            "Pension-fund purchases and sales of existing securities are swaps between savers. "
+            "The model does not show them.",
+        ],
     )
     assume(
-        "Taxes & transfers by household group",
-        'Personal income taxes (federal and S&L) use BEA "Taxes" decile shares; employee social '
-        'insurance contributions use the BEA "Contributions" shares; social benefits (ex Medicare/'
-        'Medicaid) use the "Government social benefits" shares; interest on govt debt uses household '
-        "interest-income shares (ownership via mutual funds is collapsed onto households). "
-        "Household interest payments follow PCE shares and go "
-        f"{HH_INTEREST_DEPOSITORY:.0%} to banks / rest to non-bank lenders. Remittances abroad follow "
-        "wage shares.",
+        "Taxes and transfers by household group",
+        [
+            'Personal income taxes (federal, state and local) use the BEA "Taxes" decile shares.',
+            'Employee social-insurance contributions use the BEA "Contributions" shares.',
+            "Social benefits (not Medicare or Medicaid) use the BEA "
+            '"Government social benefits" shares.',
+            "Interest on government debt uses household interest-income shares. The model puts "
+            "ownership through mutual funds onto households.",
+            "Household interest payments follow consumer-spending shares.",
+            f"{HH_INTEREST_DEPOSITORY:.0%} of household interest payments goes to banks. The "
+            "remainder goes to non-bank lenders.",
+            "Remittances abroad follow wage shares.",
+        ],
     )
 
     # Federal government, Fed, RoW
@@ -1433,30 +1574,41 @@ def main():
         nipa["fed_transfers_row"] + nipa["fed_other_transfers_row"],
     )
     assume(
-        "Money creation and destruction (MMT view)",
-        "The Federal government is split into a SOURCE node (spending = crediting bank reserves = new "
-        "money) and a SINK node (taxes, fees, Fed remittances = money deleted). State & local "
-        "governments are currency USERS: an ordinary node that must tax/borrow before spending. The "
-        "Rest of World is split into a SOURCE (export receipts bring dollars in) and a SINK (import "
-        'payments send dollars out). Bank lending is the "horizontal" source of money: every node\'s '
-        'gap between outflows and inflows is filled by "Bank credit & dis-saving" (source) or sent to '
-        '"Net saving & debt repayment" (sink). Pension funds are also split into a source and a sink '
-        "(see Pensions). The Federal Reserve is consolidated with the Treasury on the money-creation "
-        f"side: in {YEAR} it earned ${sec_income/1e3:.0f}B on its securities ("
-        f"{tsy_share:.0%} Treasuries / {1-tsy_share:.0%} mortgage-backed, {split_src}; the MBS "
-        "part arrives from the banking node, which collects mortgage interest), paid "
-        f"${fedfin['int_reserves']/1e3:.0f}B interest on bank reserves and ${fedfin['int_repo']/1e3:.0f}B "
-        "on reverse repos (passed to households via money market funds by interest-income shares) and "
-        f'remitted ${nipa["fed_frb_remit"]/1e3:.1f}B. '
-        + (
-            f"Its ${fed_loss/1e3:.0f}B shortfall (booked as a 'deferred asset') is paid with newly "
-            "created reserves, so it is shown as coming from the Federal money-creation node. "
-            if fed_loss > 0
-            else ""
-        )
-        + "Federal interest: "
-        f"${fed_int_to_frb/1e3:.0f}B to the Federal Reserve, "
-        f'${nipa["fed_int_row"]/1e3:.0f}B abroad, ${fed_int_persons/1e3:.0f}B to households.',
+        "Money creation and removal (MMT view)",
+        [
+            "The model divides the Federal government into a SOURCE node and a SINK node.",
+            "Federal spending puts credit in bank reserves. This makes new money.",
+            "Taxes, fees and Fed remittances remove money.",
+            "State and local governments are currency USERS. They are an ordinary node. They must "
+            "tax or borrow before they spend.",
+            "The model divides the Rest of World into a SOURCE and a SINK. Export receipts bring "
+            "dollars in. Import payments send dollars out.",
+            'Bank lending is the "horizontal" source of money.',
+            'If a node pays out more than it gets, "Bank credit & dis-saving" supplies the '
+            'difference. If it gets more than it pays out, the difference goes to "Net saving & '
+            'debt repayment".',
+            "Pension funds also have a source and a sink (refer to Pensions).",
+            "For money creation, the model combines the Federal Reserve with the Treasury.",
+            f"In {YEAR}, the Fed got ${sec_income/1e3:.0f}B from its securities: "
+            f"{tsy_share:.0%} from Treasury securities and {1-tsy_share:.0%} from mortgage-backed "
+            f"securities ({split_src}).",
+            "The mortgage-backed part comes from the banking node, because banks collect mortgage "
+            "interest.",
+            f"The Fed paid ${fedfin['int_reserves']/1e3:.0f}B interest on bank reserves.",
+            f"The Fed paid ${fedfin['int_repo']/1e3:.0f}B interest on reverse repos. This goes to "
+            "households through money market funds, by interest-income shares.",
+            f'The Fed sent ${nipa["fed_frb_remit"]/1e3:.1f}B to the Treasury.',
+            (
+                f"The Fed had a loss of ${fed_loss/1e3:.0f}B. The Fed records it as a "
+                '"deferred asset" and pays it with new reserves. Thus, it comes from the Federal '
+                "money-creation node."
+                if fed_loss > 0
+                else None
+            ),
+            f"Federal interest: ${fed_int_to_frb/1e3:.0f}B to the Federal Reserve, "
+            f'${nipa["fed_int_row"]/1e3:.0f}B abroad and ${fed_int_persons/1e3:.0f}B to '
+            "households.",
+        ],
     )
 
     # ---- Aggregate industries into nodes ----------------------------------------------
@@ -1520,10 +1672,15 @@ def main():
         ] = "Funds, trusts & other financial vehicles (mutual funds, trusts, fund admin)"
     assume(
         "Industry nodes",
-        f"The {len(ind_keep)} BEA detail industries are reduced to {len(node_meta)} nodes: the {k} "
-        "largest by gross output are kept individually; the rest are merged within their BEA summary "
-        'industry ("Other ..."). Rerun build_flows.py --industry-nodes N to change this (max ~400). '
-        "Purchases between industries merged into the same node become internal and are not shown.",
+        [
+            f"The model has {len(ind_keep)} BEA detail industries. It shows them as "
+            f"{len(node_meta)} nodes.",
+            f"The {k} largest industries by gross output each have their own node.",
+            'The model merges the other industries in their BEA summary industry ("Other ...").',
+            "To change this, run build_flows.py --industry-nodes N (maximum approximately 400).",
+            "Purchases between industries in the same node are internal. The model does not show "
+            "them.",
+        ],
     )
 
     special = {
@@ -1636,12 +1793,17 @@ def main():
             inflow[n] += -gap
             outflow["CREDIT"] += -gap
     assume(
-        "Edge pruning & balancing",
-        f"Edges under ${MIN_EDGE:.0f}M/yr are dropped unless they are among a node's 3 largest "
-        f"outflows (${dropped/1e3:,.1f}B dropped in total). After pruning, every ordinary node is made "
-        'exactly stock-flow consistent for the year: surplus inflow goes to "Net saving & debt '
-        'repayment", deficits are drawn from "Bank credit & dis-saving". So for every non-source/sink '
-        "node, dollars in = dollars out, which is what makes the random-dollar walk well defined.",
+        "Small links and balance",
+        [
+            f"The model removes links of less than ${MIN_EDGE:.0f}M per year. It keeps the 3 "
+            "largest outflows of each node.",
+            f"The removed links total ${dropped/1e3:,.1f}B.",
+            "After this, the model balances each ordinary node exactly for the year.",
+            'Extra inflow goes to "Net saving & debt repayment". Missing inflow comes from '
+            '"Bank credit & dis-saving".',
+            "Thus, for each node that is not a source or a sink, dollars in are equal to dollars "
+            "out. The random-dollar walk needs this balance.",
+        ],
     )
     # dwell times
     bus_dep = z1["nfc_chk"] + z1["nfc_ts"] + z1["nnc_chk"] + z1["nnc_ts"]
@@ -1656,54 +1818,84 @@ def main():
     dwell["SL"] = sl_dep / outflow["SL"] * 365
     dwell["FRB"] = FRB_DWELL_DAYS
     assume(
-        "How long a dollar sits at a node",
-        "Mean holding time = money held / annual outflow (inverse velocity), using average deposit "
-        f"balances over the four quarters of {YEAR} from the Fed's Financial Accounts (Z.1). Businesses: "
-        f"${bus_dep/1e6:.1f}T of checkable, time & savings deposits held by nonfinancial corporate and "
-        "noncorporate business, spread in proportion to outflows -> "
-        f"{dwell[next(iter(node_meta))]:.0f} days for every industry. Households: "
-        f"${hh_dep.sum()/1e6:.1f}T of deposits from the Fed's Distributional Financial Accounts by "
-        "income group (bottom 20%, 20-40, 40-60, 60-80, 80-99, top 1%); each band is split among our "
-        "finer groups by their share of disposable income (DFA ranks by household income, not "
-        f"equivalized income). Resulting balances bottom->top: "
-        f'{", ".join(f"${d/1e3:,.0f}B" for d in hh_dep)}. State & local: ${sl_dep/1e6:.2f}T. Fed '
-        f"{FRB_DWELL_DAYS:.0f} days. In the trace each stay is drawn from an exponential distribution "
-        'with that mean (memoryless "pool" of money). Sources hold for 0 days; sinks are terminal.',
+        "How long a dollar stays at a node",
+        [
+            "Mean holding time is equal to money held divided by annual outflow (the inverse of "
+            "velocity).",
+            f"Deposit balances are the mean of the four quarters of {YEAR}. Source: Federal "
+            "Reserve Financial Accounts (Z.1).",
+            f"Businesses: nonfinancial corporate and noncorporate businesses hold "
+            f"${bus_dep/1e6:.1f}T in checkable, time and savings deposits.",
+            "The model divides this amount in proportion to outflows. Thus, all industries have "
+            f"the same holding time: {dwell[next(iter(node_meta))]:.0f} days.",
+            f"Households: deposits of ${hh_dep.sum()/1e6:.1f}T come from the Fed Distributional "
+            "Financial Accounts (DFA), by income group.",
+            "The DFA income groups are: bottom 20%, 20-40%, 40-60%, 60-80%, 80-99% and top 1%.",
+            "The model divides each DFA group among its smaller groups by their share of "
+            "disposable income.",
+            "DFA ranks by household income, not by equivalized income.",
+            "Balances, bottom to top: "
+            + ", ".join(f"${d/1e3:,.0f}B" for d in hh_dep)
+            + ".",
+            f"State and local governments: ${sl_dep/1e6:.2f}T.",
+            f"Federal Reserve: {FRB_DWELL_DAYS:.0f} days.",
+            "In the trace, the model takes each stay from an exponential distribution with that "
+            "mean.",
+            "Sources hold money for 0 days. Sinks are the end of the path.",
+        ],
     )
     assume(
-        "Numbers entered by hand (not downloaded)",
-        "These inputs are typed into build_flows.py rather than read from a downloaded file; edit them "
-        "there to test sensitivity. "
-        f"(1) Federal Reserve {YEAR} income statement: securities income "
-        f"${sec_income/1e3:.1f}B, interest on reserves ${fedfin['int_reserves']/1e3:.1f}B, "
-        f"interest on reverse repos ${fedfin['int_repo']/1e3:.1f}B ("
-        + (
-            "Federal Reserve Banks' audited Combined Statements of Operations"
-            if "tsy" in fedfin
-            else "Fed Board income & expense press release"
-        )
-        + f"), and a {FRB_DWELL_DAYS:.0f}-day Fed holding time. "
-        f"(2) {HH_INTEREST_DEPOSITORY:.0%} of household interest payments go to banks. "
-        f"(3) Medicare+Medicaid capped at {GOV_HEALTH_CAP:.0%} of PCE on health providers; private "
-        "insurance claims capped so all payers together cover at most 95%. "
-        "(4) Household spending tilts by income quintile (approximate BLS CE 2017 budget shares, "
-        f"applied unchanged to {YEAR}). "
-        f"(5) Edge-pruning threshold ${MIN_EDGE:.0f}M. "
-        "(6) Two concordances: fixed-asset industries -> IO detail industries (by NAICS prefix) and "
-        "fixed-asset types -> IO commodities (by NAICS code). "
-        "(7) Proxies for who in the household distribution receives/pays things BEA does not split: "
-        "pension benefits (like government benefits), owner-occupied housing investment and employee "
-        "pension contributions (like wages), household interest payments (like consumer spending), "
-        "Fed reverse-repo interest (like interest income).",
+        "Numbers entered by hand",
+        [
+            "Some inputs are typed in build_flows.py. The model does not read them from a "
+            "downloaded file.",
+            "To test sensitivity, change these values in build_flows.py.",
+            f"Federal Reserve {YEAR} income statement: securities income "
+            f"${sec_income/1e3:.1f}B, interest on reserves ${fedfin['int_reserves']/1e3:.1f}B, "
+            f"interest on reverse repos ${fedfin['int_repo']/1e3:.1f}B.",
+            (
+                "These Fed values are copied exactly from the audited Federal Reserve Banks "
+                "financial statements."
+                if fed_audited
+                else "These Fed values come from the Federal Reserve Board press release."
+            ),
+            f"Federal Reserve holding time: {FRB_DWELL_DAYS:.0f} days.",
+            f"Banks get {HH_INTEREST_DEPOSITORY:.0%} of household interest payments.",
+            f"Medicare and Medicaid pay a maximum of {GOV_HEALTH_CAP:.0%} of consumer spending at "
+            "health providers.",
+            "Private insurance claims have a limit, so that all payers together pay a maximum of "
+            "95%.",
+            "Household spending tilts by income quintile. These are approximate BLS 2017 budget "
+            f"shares. The model uses them without change for {YEAR}.",
+            f"Link threshold: ${MIN_EDGE:.0f}M per year.",
+            "Two concordances: fixed-asset industries to IO detail industries (by NAICS prefix), "
+            "and fixed-asset types to IO commodities (by NAICS code).",
+            "Proxies for items that BEA does not divide by household group:",
+            "Pension benefits use the shares of government benefits.",
+            "Owner-occupied housing investment and employee pension contributions use wage shares.",
+            "Household interest payments use consumer-spending shares.",
+            "Fed reverse-repo interest uses interest-income shares.",
+            (
+                f"The {YEAR} projection uses no hand-entered scale factors. All factors come from "
+                "BEA data."
+                if YEAR > SUMMARY_LAST
+                else None
+            ),
+        ],
     )
     assume(
-        "Not modelled",
-        "Purchases and sales of existing financial assets (stocks, bonds, property) - they are swaps "
-        "between savers and appear only as the net saving / bank credit residuals. Cross-border "
-        "dividends and interest other than on federal debt. Subsidies (netted inside taxes on "
-        "production). Inventory draw-downs. Nonprofit institutions as separate actors (folded into "
-        "households and industries as BEA does). Household type (children, age, etc.). Within-year "
-        "timing: every flow is an annual average.",
+        "Items that the model does not show",
+        [
+            "Purchases and sales of existing financial assets (stocks, bonds, property). These are "
+            "swaps between savers. They show only in the net-saving and bank-credit nodes.",
+            "Cross-border dividends and interest, except interest on federal debt.",
+            "Subsidies. Taxes on production include them as a net value.",
+            "Inventory decreases.",
+            "Nonprofit institutions as separate nodes. BEA includes them in households and "
+            "industries. This model does the same.",
+            "Household type (children, age and other types).",
+            "Timing in the year. Each flow is an annual mean.",
+        ],
     )
 
     def node_url(n, codes):

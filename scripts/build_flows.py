@@ -907,7 +907,11 @@ def main():
             f"Deposit balances come from {YEAR} Z.1 and DFA data.",
             f"Investment by industry and asset type comes from {YEAR} Fixed Assets data.",
             f"Income shares by household group come from {dpi_year} data."
-            + (" This is the latest year that BEA publishes." if dpi_year < YEAR else ""),
+            + (
+                " This is the latest year that BEA publishes."
+                if dpi_year < YEAR
+                else ""
+            ),
             (
                 f"For {dpi_year}, BEA gives the top 1% and top 5% shares as ranges. The model uses "
                 "the middle of each range."
@@ -915,7 +919,11 @@ def main():
                 else None
             ),
             f"Spending shares by household group come from {joint_year} data."
-            + (" This is the latest year that BEA publishes." if joint_year < YEAR else ""),
+            + (
+                " This is the latest year that BEA publishes."
+                if joint_year < YEAR
+                else ""
+            ),
             (
                 f"Federal Reserve figures come from the audited Federal Reserve Banks financial "
                 f"statements for {YEAR}. The values are copied exactly."

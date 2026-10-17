@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Where US dollars are born, live and die (2017)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="data/flows.js"></script>
+</head>
+<body>
+<header>
+  <div>
+    <h1>US money flows, 2017 &mdash; creation &rarr; circulation &rarr; destruction</h1>
+    <div id="meta" class="muted"></div>
+  </div>
+  <button id="btn-assumptions" class="primary">Assumptions &amp; sources</button>
+</header>
+
+<section id="controls">
+  <label>Potential weights
+    <select id="weighting">
+      <option value="unit" selected>Unit (1 per transaction)</option>
+      <option value="log">log($)</option>
+      <option value="dollar">$ flow</option>
+    </select>
+  </label>
+  <label>Min edge for potential/connectivity ($B) <input id="min-edge" type="number" value="0.5" min="0" step="0.1"></label>
+  <label>Columns <input id="ncols" type="number" value="22" min="4" max="80"></label>
+  <label>Highlight depth <input id="depth" type="range" min="1" max="4" value="2"><span id="depth-val">2</span></label>
+  <label><input id="bg-edges" type="checkbox" checked> Background edges</label>
+  <input id="search" list="node-list" placeholder="Find node..."><datalist id="node-list"></datalist>
+  <div id="legend"></div>
+</section>
+
+<main id="top">
+  <div id="graph-wrap"><svg id="graph"></svg></div>
+  <aside id="panel"><p class="muted">Click a node to see where its money comes from (blue) and where it goes (orange). Hover a link for amounts. Scroll to zoom, drag to pan.</p></aside>
+</main>
+
+<section id="tracer">
+  <h2>Follow a random dollar</h2>
+  <div class="row">
+    <label>Created by
+      <select id="src-filter">
+        <option value="">Any creation event (weighted by $)</option>
+      </select>
+    </label>
+    <label>Must pass through
+      <input id="through-input" list="node-list" placeholder="type a node name...">
+    </label>
+    <button id="through-add">Add</button>
+    <span id="through-chips"></span>
+    <button id="btn-trace" class="primary">Pick a random dollar</button>
+    <label><input id="trace-on-graph" type="checkbox" checked> Show path on graph</label>
+    <label>Chart x-axis
+      <select id="trace-x"><option value="time">Time (days)</option><option value="step">Step</option></select>
+    </label>
+  </div>
+  <div id="trace-summary" class="muted">No dollar selected yet.</div>
+  <svg id="trace-chart"></svg>
+  <div id="trace-table"></div>
+</section>
+
+<div id="tooltip"></div>
+
+<div id="modal" class="hidden">
+  <div class="modal-body">
+    <button id="modal-close">&times;</button>
+    <h2>Assumptions &amp; sources</h2>
+    <div id="assumptions"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

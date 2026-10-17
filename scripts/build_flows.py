@@ -18,16 +18,18 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "web" / "data" / "flows.js"
-YEAR = 2017
+YEAR = 2023  # overridden by --year
+IO_DETAIL_YEAR = 2017  # only year BEA publishes the 402-industry detail tables
+SOURCE_YEARS = {}
 
 # ---- Tunable assumptions (all $ millions unless noted) -------------------------------
-HH_DEPOSITS = (
-    10.5e6  # household transaction + savings deposits, approx Fed Z.1 B.101, 2017
-)
-BUS_DEPOSITS = 2.6e6  # nonfinancial business deposits + currency, approx Fed Z.1, 2017
-SL_DEPOSITS = 0.4e6  # state & local govt deposits + currency, approx Fed Z.1, 2017
 FRB_DWELL_DAYS = 7.0  # Fed remits earnings to Treasury weekly
-IOER = 25.9e3  # Fed interest paid on reserve balances 2017 (approx, Fed annual report)
+# Federal Reserve Banks' income statement, from the Board's annual income & expense press releases.
+# 2023 reserve/repo split derived from the reported 2021->2022 and 2022->2023 changes.
+FED_FINANCIALS = {
+    2017: {"securities_income": 113.6e3, "int_reserves": 25.9e3, "int_repo": 4.0e3},
+    2023: {"securities_income": 163.8e3, "int_reserves": 176.6e3, "int_repo": 104.5e3},
+}
 HH_INTEREST_DEPOSITORY = (
     0.7  # share of household interest payments going to banks (rest non-bank lenders)
 )
@@ -36,8 +38,6 @@ GOV_HEALTH_CAP = (
 )
 MIN_EDGE = 25.0  # drop edges below $25M/yr (except each node's top 3 outflows)
 
-# Household deposit shares (sum to 1) – roughly follows SCF 2016/2019 transaction-account
-# concentration by income; used only for dwell-time (velocity) estimates.
 HH_GROUPS = [
     "0-10%",
     "10-20%",
@@ -52,21 +52,18 @@ HH_GROUPS = [
     "95-99%",
     "Top 1%",
 ]
-HH_DEPOSIT_SHARE = [
-    0.008,
-    0.012,
-    0.018,
-    0.025,
-    0.035,
-    0.045,
-    0.06,
-    0.08,
-    0.12,
-    0.12,
-    0.20,
-    0.277,
-]
 HH_QUINTILE = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4]
+# Fed Distributional Financial Accounts income bands -> indices into HH_GROUPS
+DFA_BANDS = {
+    "pct00to20": [0, 1], "pct20to40": [2, 3], "pct40to60": [4, 5],
+    "pct60to80": [6, 7], "pct80to99": [8, 9, 10], "pct99to100": [11],
+}
+Z1_SERIES = {
+    "hh_chk": "FL153020005", "hh_ts": "FL153030005", "nfc_chk": "FL103020005",
+    "nfc_ts": "FL103030003", "nnc_chk": "FL113020005", "nnc_ts": "FL113030003",
+    "sl_chk": "FL213020005", "sl_ts": "FL213030000", "fed_tsy": "FL713061163",
+    "fed_agency": "FL713061765",
+}
 
 # Spending tilt by income quintile relative to the average household (approximate, informed by
 # BLS Consumer Expenditure Survey 2017 quintile budget shares; entered by hand because BLS
@@ -371,7 +368,7 @@ def load_hierarchy():
 def load_use():
     u = pd.read_excel(
         RAW / "io" / "IOUse_Before_Redefinitions_PRO_2017_Detail.xlsx",
-        sheet_name=str(YEAR),
+        sheet_name=str(IO_DETAIL_YEAR),
         header=None,
     )
     col_codes = [code_str(c) if pd.notna(c) else None for c in u.iloc[5]]
@@ -402,7 +399,7 @@ def load_use():
 def load_make(industries, commodities):
     m = pd.read_excel(
         RAW / "io" / "IOMake_Before_Redefinitions_2017_Detail.xlsx",
-        sheet_name=str(YEAR),
+        sheet_name=str(IO_DETAIL_YEAR),
         header=None,
     )
     col_codes = [code_str(c) if pd.notna(c) else None for c in m.iloc[5]]
@@ -419,9 +416,74 @@ def load_make(industries, commodities):
     return M
 
 
+def load_summary(kind):
+    """BEA summary Use or Make table for YEAR as {(row code, col code): $M}."""
+    df = pd.read_excel(
+        RAW / "io" / f"IO{kind}_Before_Redefinitions_PRO_1997-2023_Summary.xlsx",
+        sheet_name=str(YEAR),
+        header=None,
+    )
+    cols = [code_str(c) if pd.notna(c) else None for c in df.iloc[5]]
+    rows = [code_str(c) if pd.notna(c) else None for c in df.iloc[:, 0]]
+    vals = df.apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy()
+    return {
+        (r, c): vals[i, j]
+        for i, r in enumerate(rows) if i >= 7 and r
+        for j, c in enumerate(cols) if j >= 2 and c
+    }
+
+
+def scale_blocks(M, row_codes, col_codes, row_map, col_map, target):
+    """Rescale each summary-level block of a detail matrix so it sums to the target year's value."""
+    R = [row_map(c) for c in row_codes]
+    C = [col_map(c) for c in col_codes]
+    block = defaultdict(float)
+    nz = list(zip(*np.nonzero(M)))
+    for i, j in nz:
+        block[(R[i], C[j])] += M[i, j]
+    out = np.zeros_like(M)
+    for i, j in nz:
+        s = block[(R[i], C[j])]
+        if abs(s) > 1e-9:
+            out[i, j] = M[i, j] * target.get((R[i], C[j]), 0.0) / s
+    rset, cset = set(R), set(C)
+    relevant = {k: v for k, v in target.items() if k[0] in rset and k[1] in cset}
+    lost = sum(abs(v) for k, v in relevant.items() if abs(block.get(k, 0.0)) <= 1e-9)
+    return out, lost, sum(abs(v) for v in relevant.values())
+
+
+def load_z1():
+    """Fed Financial Accounts (Z.1) levels, averaged over the four quarters of YEAR."""
+    out = {}
+    for fname in ("F2_2_s.csv", "F2_3_s.csv", "S121_s.csv"):
+        df = pd.read_csv(RAW / "z1" / "csv" / fname)
+        df = df[df["date"].astype(str).str.startswith(str(YEAR))]
+        for k, code in Z1_SERIES.items():
+            if k not in out and f"{code}.Q" in df.columns:
+                out[k] = float(pd.to_numeric(df[f"{code}.Q"], errors="coerce").mean())
+    missing = set(Z1_SERIES) - set(out)
+    if missing:
+        raise SystemExit(f"Missing Z.1 series: {missing}")
+    return out
+
+
+def load_dfa_deposits(dpi_shares):
+    """Household deposits by HH_GROUPS from the Fed's Distributional Financial Accounts (income)."""
+    d = pd.read_csv(RAW / "dfa" / "dfa-income-levels-detail.csv")
+    d = d[d["Date"].astype(str).str.startswith(str(YEAR))]
+    band = d.groupby("Category")["Deposits"].mean()
+    dep = np.zeros(len(HH_GROUPS))
+    for cat, idx in DFA_BANDS.items():
+        w = dpi_shares[idx] / dpi_shares[idx].sum()
+        dep[idx] = band[cat] * w
+    return dep
+
+
 def load_household_shares():
     d = pd.read_csv(RAW / "dpi_summary.csv")
-    d = d[(d.Year == YEAR) & (d.Ranking == "Equivalized Disposable Personal Income")]
+    dpi_year = max(y for y in d.Year.unique() if y <= YEAR)
+    SOURCE_YEARS["distribution of personal income"] = int(dpi_year)
+    d = d[(d.Year == dpi_year) & (d.Ranking == "Equivalized Disposable Personal Income")]
     d["Value"] = pd.to_numeric(d["Value"], errors="coerce")
 
     dpi = dict(
@@ -459,9 +521,12 @@ def load_household_shares():
     out = {}
     for k, prefix in concepts.items():
         out[k] = shares(d[d["Income Concept"].str.startswith(prefix)])
+    out["dpi"] = shares(d[d["Income Concept"] == "Disposable personal income"])
     j = pd.read_excel(RAW / "joint_dist.xlsx", sheet_name="shares of NIPA totals")
+    joint_year = max(y for y in j.Year.unique() if y <= YEAR)
+    SOURCE_YEARS["joint DPI-PCE distribution"] = int(joint_year)
     j = j[
-        (j.Year == YEAR)
+        (j.Year == joint_year)
         & (j.Ranking == "Equivalized Disposable Personal Income")
         & (j.Series == "Personal Consumption Expenditures")
     ]
@@ -577,6 +642,7 @@ SECTOR_MAP = {
 
 
 def main():
+    global YEAR
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--industry-nodes",
@@ -584,7 +650,9 @@ def main():
         default=150,
         help="target number of industry nodes (max ~400 = full BEA detail)",
     )
+    ap.add_argument("--year", type=int, default=YEAR, choices=sorted(FED_FINANCIALS))
     args = ap.parse_args()
+    YEAR = args.year
 
     nipa = load_nipa()
     hier = load_hierarchy()
@@ -593,18 +661,47 @@ def main():
     Z, F, VA = use["Z"], use["F"], use["VA"]
     make = load_make(inds, coms)
     hh = load_household_shares()
+    z1 = load_z1()
+
+    scale_note = ""
+    if YEAR != IO_DETAIL_YEAR:
+        su, sm = load_summary("Use"), load_summary("Make")
+        summ = lambda c: hier.get(c, {}).get("summary", c)  # noqa: E731
+        va_codes = ["V00100", "V00200", "V00300"]
+        Z, l1, t1 = scale_blocks(Z, coms, inds, summ, summ, su)
+        F, l2, t2 = scale_blocks(F, coms, fd, summ, lambda c: c[:4], su)
+        VAm, l3, t3 = scale_blocks(
+            np.vstack([VA[c] for c in va_codes]), va_codes, inds, lambda c: c[:4], summ, su
+        )
+        make, l4, t4 = scale_blocks(make, inds, coms, summ, summ, sm)
+        VA = {c: VAm[k] for k, c in enumerate(va_codes)}
+        VA["T008"] = Z.sum(0) + VAm.sum(0)
+        lost = (l1 + l2 + l3 + l4) / (t1 + t2 + t3 + t4)
+        scale_note = (
+            f" BEA only publishes the 402-industry detail for {IO_DETAIL_YEAR}; for {YEAR} it publishes "
+            "~71-industry summary Use and Make tables. Every block of the detail tables that falls in one "
+            f"summary cell (summary commodity x summary industry/final-use column) is rescaled so it sums "
+            f"exactly to BEA's {YEAR} summary value, keeping the {IO_DETAIL_YEAR} split inside the block. "
+            f"So industry totals, value added, final demand and imports are {YEAR} values; only the "
+            f"within-summary detail mix is from {IO_DETAIL_YEAR}. Summary cells with no {IO_DETAIL_YEAR} "
+            f"detail counterpart are dropped ({lost:.2%} of {YEAR} table value)."
+        )
+    SOURCE_YEARS["input-output structure (detail)"] = IO_DETAIL_YEAR
 
     assume(
         "Base year and core data",
         f"Everything is a snapshot of annual flows in {YEAR}. Inter-industry flows come from the BEA "
-        f"detailed (402-industry) Use and Make tables, before redefinitions, producer prices. Government, "
-        "tax, transfer and income totals come from NIPA tables 1.12, 2.1, 3.2, 3.3, 3.12, 4.1; pension "
-        "cash flows from NIPA 7.20 (all plans) and 7.23 (federal plans). Investment by industry and "
-        "asset type, and residential investment by tenure, come from BEA Fixed Assets detailed "
-        "estimates. Household splits come from BEA Distribution of Personal Income (equivalized DPI "
-        "ranking) and the BEA/BLS joint DPI-PCE distribution. Units shown are $ billions per year. "
-        "Note: the IO tables are the 2017 benchmark while the NIPA and Fixed Assets figures are the "
-        "current vintage, so totals from different tables can differ by a few percent.",
+        "detailed (402-industry) Use and Make tables, before redefinitions, producer prices."
+        + scale_note
+        + " Government, tax, transfer and income totals come from NIPA tables 1.12, 2.1, 3.2, 3.3, "
+        "3.12, 4.1; pension cash flows from NIPA 7.20 (all plans) and 7.23 (federal plans). Investment "
+        "by industry and asset type, and residential investment by tenure, come from BEA Fixed Assets "
+        "detailed estimates. Household splits come from BEA Distribution of Personal Income "
+        "(equivalized DPI ranking) and the BEA/BLS joint DPI-PCE distribution. Deposit balances come "
+        "from the Fed's Financial Accounts (Z.1) and Distributional Financial Accounts. Units shown are "
+        "$ billions per year. Data years used: "
+        + ", ".join(f"{k} {v}" for k, v in {**SOURCE_YEARS, "everything else": YEAR}.items())
+        + ". Different BEA tables are on slightly different vintages, so totals can differ by a few percent.",
     )
 
     # Drop imputed / non-monetary items
@@ -899,15 +996,21 @@ def main():
     private = [j for j in ind_keep if gov_level(inds[j]) is None]
     gos_priv = np.clip(gos, 0, None)
     gos_priv_tot = sum(gos_priv[j] for j in private)
-    fed_int_to_frb = nipa["fed_frb_remit"] + IOER
+    fedfin = FED_FINANCIALS[YEAR]
+    tsy_share = z1["fed_tsy"] / (z1["fed_tsy"] + z1["fed_agency"])
+    fed_tsy_int = fedfin["securities_income"] * tsy_share
+    fed_mbs_int = fedfin["securities_income"] - fed_tsy_int
+    fed_int_to_frb = fed_tsy_int
     fed_int_res = nipa["fed_interest"] - nipa["fed_int_row"]
     # interest the Treasury pays its own employee pension funds is intra-federal: netted out
     fed_int_persons = fed_int_res - fed_int_to_frb - nipa["fpen_mint"]
+    # Fed reverse-repo interest reaches households via money market funds; it is inside personal interest
     ind_interest = (
         nipa["pers_interest"]
         - (fed_int_res - fed_int_to_frb)
         - nipa["sl_interest"]
         - nipa["pen_imp_int"]
+        - fedfin["int_repo"]
     )
     payouts = {
         "corporate income tax (federal)": ("FED_SINK", nipa["fed_corp"]),
@@ -1127,9 +1230,22 @@ def main():
 
     # Federal government, Fed, RoW
     add("FED_SRC", "SL", "grants-in-aid to states & localities", nipa["grants"])
-    add("FED_SRC", "FRB", "interest on Treasuries held by the Fed", fed_int_to_frb)
+    add("FED_SRC", "FRB", "interest on Treasuries held by the Fed", fed_tsy_int)
+    add("I:" + bank_code, "FRB", "mortgage-backed securities interest passed to the Fed", fed_mbs_int)
     add("FRB", "FED_SINK", "Fed remittances to Treasury", nipa["fed_frb_remit"])
-    add("FRB", "I:" + bank_code, "interest on reserve balances", IOER)
+    add("FRB", "I:" + bank_code, "interest on reserve balances", fedfin["int_reserves"])
+    for h in range(H):
+        add(
+            "FRB",
+            hh_ids[h],
+            "Fed reverse-repo interest (via money market funds)",
+            fedfin["int_repo"] * hh["interest"][h],
+        )
+    fed_loss = (
+        fedfin["int_reserves"] + fedfin["int_repo"] + nipa["fed_frb_remit"]
+        - fedfin["securities_income"]
+    )
+    add("FED_SRC", "FRB", "Fed losses funded by new reserves (deferred asset)", fed_loss)
     add(
         "FED_SRC", "ROW_SINK", "interest on Treasuries held abroad", nipa["fed_int_row"]
     )
@@ -1148,8 +1264,21 @@ def main():
         'payments send dollars out). Bank lending is the "horizontal" source of money: every node\'s '
         'gap between outflows and inflows is filled by "Bank credit & dis-saving" (source) or sent to '
         '"Net saving & debt repayment" (sink). Pension funds are also split into a source and a sink '
-        "(see Pensions). Federal interest: "
-        f"${fed_int_to_frb/1e3:.0f}B to the Federal Reserve (= remittances + interest on reserves), "
+        "(see Pensions). The Federal Reserve is consolidated with the Treasury on the money-creation "
+        f"side: in {YEAR} it earned ${fedfin['securities_income']/1e3:.0f}B on its securities (split "
+        f"{tsy_share:.0%} Treasuries / {1-tsy_share:.0%} mortgage-backed by its Z.1 holdings; the MBS "
+        "part arrives from the banking node, which collects mortgage interest), paid "
+        f"${fedfin['int_reserves']/1e3:.0f}B interest on bank reserves and ${fedfin['int_repo']/1e3:.0f}B "
+        "on reverse repos (passed to households via money market funds by interest-income shares) and "
+        f'remitted ${nipa["fed_frb_remit"]/1e3:.1f}B. '
+        + (
+            f"Its ${fed_loss/1e3:.0f}B shortfall (booked as a 'deferred asset') is paid with newly "
+            "created reserves, so it is shown as coming from the Federal money-creation node. "
+            if fed_loss > 0
+            else ""
+        )
+        + "Federal interest: "
+        f"${fed_int_to_frb/1e3:.0f}B to the Federal Reserve, "
         f'${nipa["fed_int_row"]/1e3:.0f}B abroad, ${fed_int_persons/1e3:.0f}B to households.',
     )
 
@@ -1338,22 +1467,29 @@ def main():
         "node, dollars in = dollars out, which is what makes the random-dollar walk well defined.",
     )
     # dwell times
+    bus_dep = z1["nfc_chk"] + z1["nfc_ts"] + z1["nnc_chk"] + z1["nnc_ts"]
+    sl_dep = z1["sl_chk"] + z1["sl_ts"]
+    hh_dep = load_dfa_deposits(hh["dpi"])
     ind_out_total = sum(outflow[n] for n in node_meta)
     dwell = {}
     for n in node_meta:
-        dwell[n] = BUS_DEPOSITS / ind_out_total * 365
+        dwell[n] = bus_dep / ind_out_total * 365
     for h, hid in enumerate(hh_ids):
-        dwell[hid] = HH_DEPOSITS * HH_DEPOSIT_SHARE[h] / outflow[hid] * 365
-    dwell["SL"] = SL_DEPOSITS / outflow["SL"] * 365
+        dwell[hid] = hh_dep[h] / outflow[hid] * 365
+    dwell["SL"] = sl_dep / outflow["SL"] * 365
     dwell["FRB"] = FRB_DWELL_DAYS
     assume(
         "How long a dollar sits at a node",
-        "Mean holding time = money held / annual outflow (inverse velocity). Businesses: ~$"
-        f"{BUS_DEPOSITS/1e6:.1f}T of deposits & currency (approx. Fed Z.1) spread in proportion to "
-        f"outflows -> {dwell[next(iter(node_meta))]:.0f} days for every industry. Households: ~$"
-        f"{HH_DEPOSITS/1e6:.1f}T of deposits (approx. Z.1), allocated across groups by assumed shares "
-        f'{", ".join(f"{s:.1%}" for s in HH_DEPOSIT_SHARE)} (bottom->top, roughly SCF concentration). '
-        f"State & local: ~${SL_DEPOSITS/1e6:.1f}T. Fed "
+        "Mean holding time = money held / annual outflow (inverse velocity), using average deposit "
+        f"balances over the four quarters of {YEAR} from the Fed's Financial Accounts (Z.1). Businesses: "
+        f"${bus_dep/1e6:.1f}T of checkable, time & savings deposits held by nonfinancial corporate and "
+        "noncorporate business, spread in proportion to outflows -> "
+        f"{dwell[next(iter(node_meta))]:.0f} days for every industry. Households: "
+        f"${hh_dep.sum()/1e6:.1f}T of deposits from the Fed's Distributional Financial Accounts by "
+        "income group (bottom 20%, 20-40, 40-60, 60-80, 80-99, top 1%); each band is split among our "
+        "finer groups by their share of disposable income (DFA ranks by household income, not "
+        f"equivalized income). Resulting balances bottom->top: "
+        f'{", ".join(f"${d/1e3:,.0f}B" for d in hh_dep)}. State & local: ${sl_dep/1e6:.2f}T. Fed '
         f"{FRB_DWELL_DAYS:.0f} days. In the trace each stay is drawn from an exponential distribution "
         'with that mean (memoryless "pool" of money). Sources hold for 0 days; sinks are terminal.',
     )
@@ -1361,21 +1497,23 @@ def main():
         "Numbers entered by hand (not downloaded)",
         "These inputs are typed into build_flows.py rather than read from a downloaded file; edit them "
         "there to test sensitivity. "
-        f"(1) Deposit stocks for holding times: households ${HH_DEPOSITS/1e6:.1f}T, businesses "
-        f"${BUS_DEPOSITS/1e6:.1f}T, state & local ${SL_DEPOSITS/1e6:.1f}T (approximate Fed Z.1 levels), "
-        "and the household deposit shares by income group (rough SCF concentration). "
-        f"(2) Fed interest on reserves ${IOER/1e3:.1f}B (approx. Fed annual report) and a {FRB_DWELL_DAYS:.0f}-day "
-        "Fed holding time. "
-        f"(3) {HH_INTEREST_DEPOSITORY:.0%} of household interest payments go to banks. "
-        f"(4) Medicare+Medicaid capped at {GOV_HEALTH_CAP:.0%} of PCE on health providers; private "
+        f"(1) Federal Reserve {YEAR} income statement: securities income "
+        f"${fedfin['securities_income']/1e3:.1f}B, interest on reserves ${fedfin['int_reserves']/1e3:.1f}B, "
+        f"interest on reverse repos ${fedfin['int_repo']/1e3:.1f}B (Fed Board income & expense press "
+        f"releases; the reserve/repo split is derived from reported year-on-year changes), and a "
+        f"{FRB_DWELL_DAYS:.0f}-day Fed holding time. "
+        f"(2) {HH_INTEREST_DEPOSITORY:.0%} of household interest payments go to banks. "
+        f"(3) Medicare+Medicaid capped at {GOV_HEALTH_CAP:.0%} of PCE on health providers; private "
         "insurance claims capped so all payers together cover at most 95%. "
-        "(5) Household spending tilts by income quintile (approximate BLS CE 2017 budget shares). "
-        f"(6) Edge-pruning threshold ${MIN_EDGE:.0f}M. "
-        "(7) Two concordances: fixed-asset industries -> IO detail industries (by NAICS prefix) and "
+        "(4) Household spending tilts by income quintile (approximate BLS CE 2017 budget shares, "
+        f"applied unchanged to {YEAR}). "
+        f"(5) Edge-pruning threshold ${MIN_EDGE:.0f}M. "
+        "(6) Two concordances: fixed-asset industries -> IO detail industries (by NAICS prefix) and "
         "fixed-asset types -> IO commodities (by NAICS code). "
-        "(8) Proxies for who in the household distribution receives/pays things BEA does not split: "
+        "(7) Proxies for who in the household distribution receives/pays things BEA does not split: "
         "pension benefits (like government benefits), owner-occupied housing investment and employee "
-        "pension contributions (like wages), household interest payments (like consumer spending).",
+        "pension contributions (like wages), household interest payments (like consumer spending), "
+        "Fed reverse-repo interest (like interest income).",
     )
     assume(
         "Not modelled",
@@ -1429,6 +1567,10 @@ def main():
             "url": "https://apps.bea.gov/industry/iTables%20Static%20Files/AllTablesIO.zip",
         },
         {
+            "name": "BEA Input-Output Accounts: summary Use & Make tables 1997-2023 (same zip)",
+            "url": "https://apps.bea.gov/industry/iTables%20Static%20Files/AllTablesIO.zip",
+        },
+        {
             "name": "BEA NIPA flat files (annual) - tables 1.12, 2.1, 3.2, 3.3, 3.12, 4.1, 7.20, 7.23",
             "url": "https://apps.bea.gov/national/Release/TXT/NipaDataA.txt",
         },
@@ -1451,6 +1593,22 @@ def main():
         {
             "name": "BEA/BLS joint distribution of DPI and PCE",
             "url": "https://www.bea.gov/sites/default/files/2026-05/joint_dist_summary.xlsx",
+        },
+        {
+            "name": "Federal Reserve Financial Accounts of the United States (Z.1), CSV tables",
+            "url": "https://www.federalreserve.gov/releases/z1/current/z1_csv_files.zip",
+        },
+        {
+            "name": "Federal Reserve Distributional Financial Accounts (deposits by income group)",
+            "url": "https://www.federalreserve.gov/releases/z1/dataviz/download/zips/dfa.zip",
+        },
+        {
+            "name": "Federal Reserve Board: Reserve Bank income & expenses 2023 (press release)",
+            "url": "https://www.federalreserve.gov/newsevents/pressreleases/other20240112a.htm",
+        },
+        {
+            "name": "Federal Reserve Board: Reserve Bank income & expenses 2022 (press release)",
+            "url": "https://www.federalreserve.gov/newsevents/pressreleases/other20230113a.htm",
         },
     ]
     data = {

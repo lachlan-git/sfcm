@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Where US dollars are born, live and die (2017)</title>
+<title>Where US dollars are born, live and die</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
@@ -11,7 +11,7 @@
 <body>
 <header>
   <div>
-    <h1>US money flows, 2017 &mdash; creation &rarr; circulation &rarr; destruction</h1>
+    <h1>US money flows, <span id="year"></span> &mdash; creation &rarr; circulation &rarr; destruction</h1>
     <div id="meta" class="muted"></div>
   </div>
   <button id="btn-assumptions" class="primary">Assumptions &amp; sources</button>
@@ -20,9 +20,9 @@
 <section id="controls">
   <label>Potential weights
     <select id="weighting">
-      <option value="unit" selected>Unit (1 per transaction)</option>
+      <option value="unit">Unit (1 per transaction)</option>
       <option value="log">log($)</option>
-      <option value="dollar">$ flow</option>
+      <option value="dollar" selected>$ flow</option>
     </select>
   </label>
   <label>Min edge for potential/connectivity ($B) <input id="min-edge" type="number" value="0.5" min="0" step="0.1"></label>

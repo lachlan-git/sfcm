@@ -350,7 +350,8 @@ function renderTrace() {
     lifespan <b>${fmtDays(tr.lifespan)}</b> · ${moves.length} transactions ·
     <span class="down">${down} downhill</span> / <span class="up">${moves.length - down} uphill</span>
     ${tr.tries ? ` · (conditional sample, ${tr.tries + 1} tries)` : ''}<br>
-    Time spent by sector: ${sectorTime.filter(d => d[1] > 0).map(([s, v]) => `<span class="chip"><span class="swatch" style="background:${color(s)}"></span>${esc(s)} ${fmtDays(v)}</span>`).join(' ')}`;
+    Time spent by sector: ${sectorTime.filter(d => d[1] > 0).map(([s, v]) => `<span class="chip"><span class="swatch" style="background:${color(s)}"></span>${esc(s)} ${fmtDays(v)}</span>`).join(' ')}
+    <div class="muted">Labels sit above their segment, or in a callout (thin line with a dot) when space is tight; any that still can't fit without overlapping are left off. Hover any segment for full details.</div>`;
   drawTraceChart();
   drawTraceTable();
   drawTraceOnGraph();
@@ -362,12 +363,13 @@ function drawTraceChart() {
   chart.selectAll('*').remove();
   if (!tr) return;
   const W = chart.node().clientWidth, H = chart.node().clientHeight;
-  const m = { l: 50, r: 20, t: 16, b: 34 };
+  const m = { l: 50, r: 20, t: 34, b: 34 };
   const byStep = document.getElementById('trace-x').value === 'step';
   const segs = tr.steps.map(s => ({ ...s, x0: byStep ? s.i : s.arrive, x1: byStep ? s.i + 1 : s.arrive + s.dwell }));
   const xMax = byStep ? segs.length : Math.max(tr.lifespan, 1);
   const x = d3.scaleLinear().domain([0, xMax]).range([m.l, W - m.r]);
-  const y = d3.scaleLinear().domain(d3.extent(nodes, d => d.V)).nice().range([H - m.b, m.t]);
+  // extra headroom above the plot so labels on the highest segments stay clear of the legend
+  const y = d3.scaleLinear().domain(d3.extent(nodes, d => d.V)).nice().range([H - m.b, m.t + 30]);
   chart.append('g').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(10));
   chart.append('g').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(6));
   chart.append('text').attr('x', W / 2).attr('y', H - 4).attr('text-anchor', 'middle').attr('class', 'axis-label')
@@ -385,12 +387,124 @@ function drawTraceChart() {
     .attr('stroke', s => color(s.node.sector)).attr('stroke-width', 5).attr('stroke-linecap', 'round')
     .on('mousemove', (e, s) => showTip(e, `<b>#${s.i} ${esc(s.node.name)}</b><br>${esc(s.node.sector)}<br>day ${s.arrive.toFixed(1)} · held ${fmtDays(s.dwell)}<br>V = ${s.node.V.toFixed(2)}${s.next ? `<br>→ ${esc(s.next.name)} (${esc(s.type)})` : ''}`))
     .on('mouseleave', hideTip);
-  const leg = chart.append('g').attr('transform', `translate(${m.l + 8},${m.t})`);
-  [...new Set(tr.steps.map(s => s.node.sector))].forEach((s, i) => {
-    const g = leg.append('g').attr('transform', `translate(${i * 150},0)`);
+  drawTraceLabels(chart, segs, x, y, xMax, { left: m.l, right: W - m.r, top: m.t + 2, bottom: H - m.b });
+  const leg = chart.append('g').attr('transform', `translate(${m.l + 8},${10})`);
+  let lx = 0;
+  [...new Set(tr.steps.map(s => s.node.sector))].forEach(s => {
+    const g = leg.append('g').attr('transform', `translate(${lx},0)`);
     g.append('rect').attr('width', 10).attr('height', 10).attr('fill', color(s));
-    g.append('text').attr('x', 14).attr('y', 9).attr('font-size', 11).text(s);
+    const t = g.append('text').attr('x', 14).attr('y', 9).attr('font-size', 11).text(s);
+    lx += 14 + t.node().getComputedTextLength() + 16;
   });
+}
+
+const labelName = name => name
+  .replace(/^Households /, 'HH ')
+  .replace(/\s*\([^)]*\)\s*$/, '')
+  .replace(/ - /g, ' – ');
+
+// Greedy label placement: longest stays first, try a few lanes, skip anything that would overlap.
+function drawTraceLabels(chart, segs, x, y, xMax, bounds) {
+  const g = chart.append('g').attr('class', 'trace-labels');
+  const placed = [];
+  const PAD = 3, LINE_W = 165, LINE_H = 12;
+  const overlaps = b => placed.some(p => b.x0 < p.x1 + PAD && b.x1 > p.x0 - PAD && b.y0 < p.y1 + PAD && b.y1 > p.y0 - PAD);
+  const segBoxes = segs.map(s => ({
+    x0: x(s.x0) - 2, x1: x(Math.max(s.x1, s.x0 + xMax / 800)) + 2, y0: y(s.node.V) - 3, y1: y(s.node.V) + 3,
+  }));
+  const measure = g.append('text').attr('class', 'trace-label');
+  const width = str => { measure.text(str); return measure.node().getComputedTextLength(); };
+  // word-wrap into at most two lines; ellipsis only if it still doesn't fit
+  const wrap = name => {
+    const words = labelName(name).split(' ');
+    const lines = [''];
+    for (const wd of words) {
+      const cand = lines[lines.length - 1] ? `${lines[lines.length - 1]} ${wd}` : wd;
+      if (width(cand) <= LINE_W || !lines[lines.length - 1]) lines[lines.length - 1] = cand;
+      else if (lines.length < 2) lines.push(wd);
+      else { lines[1] += ` ${wd}`; }
+    }
+    let last = lines[lines.length - 1];
+    if (width(last) > LINE_W) {
+      while (last.length > 3 && width(last + '…') > LINE_W) last = last.slice(0, -1);
+      lines[lines.length - 1] = last.trimEnd() + '…';
+    }
+    return lines;
+  };
+  const order = segs.map((s, k) => k).sort((a, b) => (segBoxes[b].x1 - segBoxes[b].x0) - (segBoxes[a].x1 - segBoxes[a].x0));
+  const leaders = [];
+  const hitsSeg = (b, k) => segBoxes.some((o, j) => j !== k && b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
+  const inBox = (px, py, b) => px > b.x0 - 1 && px < b.x1 + 1 && py > b.y0 - 1 && py < b.y1 + 1;
+  // sample points along a leader to test it against label boxes
+  const lineHits = (ax, ay, bx, by, b) => d3.range(1, 12).some(i => inBox(ax + (bx - ax) * i / 12, ay + (by - ay) * i / 12, b));
+  const anchorOf = k => ({ ax: (segBoxes[k].x0 + segBoxes[k].x1) / 2, ay: y(segs[k].node.V) });
+
+  const makeText = (k, lines) => {
+    const t = g.append('text').attr('class', 'trace-label').attr('text-anchor', 'middle')
+      .attr('fill', d3.color(color(segs[k].node.sector)).darker(1.2));
+    const spans = lines.map(ln => t.append('tspan').text(ln));
+    return { t, spans, h: lines.length * LINE_H, w: Math.max(...lines.map(width)) };
+  };
+  const moveTo = (lbl, cx, top) => {
+    cx = Math.min(Math.max(cx, bounds.left + lbl.w / 2), bounds.right - lbl.w / 2);
+    lbl.spans.forEach((sp, li) => sp.attr('x', cx).attr('y', top + (li + 1) * LINE_H - 2));
+    const bb = lbl.t.node().getBBox();
+    return { x0: bb.x, x1: bb.x + bb.width, y0: bb.y, y1: bb.y + bb.height };
+  };
+  const free = (b, k) => b.y0 >= bounds.top && b.y1 <= bounds.bottom && !overlaps(b) && !hitsSeg(b, k)
+    && !leaders.some(l => lineHits(l.ax, l.ay, l.bx, l.by, b));
+
+  // pass 1: labels directly above / below their own segment
+  const unplaced = [];
+  for (const k of order) {
+    const lbl = makeText(k, wrap(segs[k].node.name));
+    const { ax, ay } = anchorOf(k);
+    let box = null;
+    for (const top of [ay - 6 - lbl.h, ay - 18 - lbl.h, ay + 7]) {
+      const b = moveTo(lbl, ax, top);
+      if (free(b, k)) { box = b; break; }
+    }
+    if (box) placed.push(box);
+    else { lbl.t.remove(); unplaced.push(k); }
+  }
+
+  // pass 2: callouts - nearest free spot within reach, joined to the segment by a leader line
+  const leaderG = g.insert('g', ':first-child');
+  for (const k of unplaced) {
+    const { ax, ay } = anchorOf(k);
+    let done = false;
+    for (const lines of [wrap(segs[k].node.name), [wrap(segs[k].node.name).join(' ')].map(l => {
+      let s = l;
+      while (s.length > 3 && width(s + '…') > LINE_W) s = s.slice(0, -1);
+      return s === l ? l : s.trimEnd() + '…';
+    })]) {
+      const lbl = makeText(k, lines);
+      const cands = [];
+      for (let dy = 28; dy <= 200; dy += 12) {
+        for (const dx of [0, -50, 50, -100, 100, -160, 160, -230, 230]) {
+          cands.push([dx, -dy - lbl.h], [dx, dy]);
+        }
+      }
+      cands.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
+      for (const [dx, dy] of cands) {
+        const b = moveTo(lbl, ax + dx, ay + dy);
+        if (!free(b, k)) continue;
+        const bx = Math.min(Math.max(ax, b.x0), b.x1), by = Math.min(Math.max(ay, b.y0), b.y1);
+        if (placed.some(p => lineHits(ax, ay, bx, by, p))) continue;
+        placed.push(b);
+        leaders.push({ ax, ay, bx, by });
+        const col = d3.color(color(segs[k].node.sector)).darker(0.6);
+        leaderG.append('line').attr('class', 'trace-leader').attr('x1', ax).attr('y1', ay).attr('x2', bx).attr('y2', by)
+          .attr('stroke', col);
+        leaderG.append('circle').attr('cx', ax).attr('cy', ay).attr('r', 2).attr('fill', col);
+        done = true;
+        break;
+      }
+      if (done) break;
+      lbl.t.remove();
+    }
+  }
+  measure.remove();
 }
 
 function drawTraceTable() {
@@ -448,7 +562,7 @@ function renderChips() {
 
 // ---- assumptions modal ----------------------------------------------------------------
 const UI_ASSUMPTIONS = [
-  ['Potential (x-axis)', 'Each node gets a scalar potential V found by least squares: minimise Σ w_e (V_source − V_target − 1)² over all transaction edges (a graph-Laplacian solve, L·V = b with b_i = Σ out-weights − Σ in-weights; a.k.a. HodgeRank / SpringRank). With unit weights every counterparty relationship counts once regardless of size, so sources (pure out-flow) float up and sinks fall down. Only edges ≥ the "min edge" value enter the solve; changing it, or switching to log($)/$ weights, changes the ordering. V is only defined up to a constant (mean set to 0). Money flowing to a lower V is "downhill".'],
+  ['Potential (x-axis)', 'Each node gets a scalar potential V found by least squares: minimise Σ w_e (V_source − V_target − 1)² over all transaction edges (a graph-Laplacian solve, L·V = b with b_i = Σ out-weights − Σ in-weights; a.k.a. HodgeRank / SpringRank). With unit weights every counterparty relationship counts once regardless of size, so sources (pure out-flow) float up and sinks fall down. The default is $-flow weights, where each edge counts in proportion to its annual dollar flow, so big flows dominate the ordering. Only edges ≥ the "min edge" value enter the solve; changing it, or switching to log($)/$ weights, changes the ordering. V is only defined up to a constant (mean set to 0). Money flowing to a lower V is "downhill".'],
   ['Layout', 'Nodes are sorted by V and cut into equal-count columns (left = highest V). Within a column, nodes are sorted top-to-bottom by connectivity = number of counterparties with an edge ≥ min edge (ties broken by throughput). Alternate rows are nudged right for legibility. Column labels show the mean V of that column. Circle area ∝ annual throughput; sources have black outlines, sinks dashed.'],
   ['Path highlighting', 'Clicking a node attributes flows proportionally ("money is fungible inside a node"): e.g. depth 2 downstream shows the node\'s outflows, plus the outflows of each recipient scaled by the share of that recipient\'s spending that came from the selected node. Upstream is the mirror image using inflow shares. Flows below 0.2% of the node\'s total are hidden.'],
   ['Random dollar', 'A dollar is a random walk on the annual flow network: at each node the next payee is chosen with probability = edge flow / node outflow; the time held is exponential with the node\'s mean holding time. Starting points are creation events chosen with probability ∝ their annual outflow. When you require nodes to be visited, the walk is sampled backwards from the first required node using inflow shares (exact because every node balances) and forwards from it, then rejection-sampled for the remaining nodes and creation-source filter. Transaction type is drawn ∝ the amounts of each type on that edge.'],
@@ -467,7 +581,7 @@ function renderAssumptions() {
     <h3>Data construction (build_flows.py)</h3>${a}
     <h3>Visualisation & tracing (app.js)</h3>${u}
     <h3>Creation / destruction totals in this network</h3><table>${totals}</table>
-    <h3>NIPA 2017 control totals used</h3><table>${nipa}</table>
+    <h3>NIPA ${DATA.meta.year} control totals used</h3><table>${nipa}</table>
     <h3>Sources</h3><ul>${s}</ul>`;
 }
 
@@ -483,6 +597,8 @@ function rebuild() {
 }
 
 function init() {
+  document.getElementById('year').textContent = DATA.meta.year;
+  document.title = `Where US dollars are born, live and die (${DATA.meta.year})`;
   document.getElementById('meta').textContent =
     `${DATA.meta.nodeCount} nodes (${DATA.meta.industryNodes} industry nodes) · ${DATA.meta.linkCount.toLocaleString()} payment links · ${DATA.meta.units} · BEA data`;
   document.getElementById('legend').innerHTML = Object.entries(SECTOR_COLORS)

@@ -55,13 +55,23 @@ HH_GROUPS = [
 HH_QUINTILE = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 4]
 # Fed Distributional Financial Accounts income bands -> indices into HH_GROUPS
 DFA_BANDS = {
-    "pct00to20": [0, 1], "pct20to40": [2, 3], "pct40to60": [4, 5],
-    "pct60to80": [6, 7], "pct80to99": [8, 9, 10], "pct99to100": [11],
+    "pct00to20": [0, 1],
+    "pct20to40": [2, 3],
+    "pct40to60": [4, 5],
+    "pct60to80": [6, 7],
+    "pct80to99": [8, 9, 10],
+    "pct99to100": [11],
 }
 Z1_SERIES = {
-    "hh_chk": "FL153020005", "hh_ts": "FL153030005", "nfc_chk": "FL103020005",
-    "nfc_ts": "FL103030003", "nnc_chk": "FL113020005", "nnc_ts": "FL113030003",
-    "sl_chk": "FL213020005", "sl_ts": "FL213030000", "fed_tsy": "FL713061163",
+    "hh_chk": "FL153020005",
+    "hh_ts": "FL153030005",
+    "nfc_chk": "FL103020005",
+    "nfc_ts": "FL103030003",
+    "nnc_chk": "FL113020005",
+    "nnc_ts": "FL113030003",
+    "sl_chk": "FL213020005",
+    "sl_ts": "FL213030000",
+    "fed_tsy": "FL713061163",
     "fed_agency": "FL713061765",
 }
 
@@ -428,8 +438,10 @@ def load_summary(kind):
     vals = df.apply(pd.to_numeric, errors="coerce").fillna(0.0).to_numpy()
     return {
         (r, c): vals[i, j]
-        for i, r in enumerate(rows) if i >= 7 and r
-        for j, c in enumerate(cols) if j >= 2 and c
+        for i, r in enumerate(rows)
+        if i >= 7 and r
+        for j, c in enumerate(cols)
+        if j >= 2 and c
     }
 
 
@@ -483,7 +495,9 @@ def load_household_shares():
     d = pd.read_csv(RAW / "dpi_summary.csv")
     dpi_year = max(y for y in d.Year.unique() if y <= YEAR)
     SOURCE_YEARS["distribution of personal income"] = int(dpi_year)
-    d = d[(d.Year == dpi_year) & (d.Ranking == "Equivalized Disposable Personal Income")]
+    d = d[
+        (d.Year == dpi_year) & (d.Ranking == "Equivalized Disposable Personal Income")
+    ]
     d["Value"] = pd.to_numeric(d["Value"], errors="coerce")
 
     dpi = dict(
@@ -671,7 +685,12 @@ def main():
         Z, l1, t1 = scale_blocks(Z, coms, inds, summ, summ, su)
         F, l2, t2 = scale_blocks(F, coms, fd, summ, lambda c: c[:4], su)
         VAm, l3, t3 = scale_blocks(
-            np.vstack([VA[c] for c in va_codes]), va_codes, inds, lambda c: c[:4], summ, su
+            np.vstack([VA[c] for c in va_codes]),
+            va_codes,
+            inds,
+            lambda c: c[:4],
+            summ,
+            su,
         )
         make, l4, t4 = scale_blocks(make, inds, coms, summ, summ, sm)
         VA = {c: VAm[k] for k, c in enumerate(va_codes)}
@@ -700,7 +719,9 @@ def main():
         "(equivalized DPI ranking) and the BEA/BLS joint DPI-PCE distribution. Deposit balances come "
         "from the Fed's Financial Accounts (Z.1) and Distributional Financial Accounts. Units shown are "
         "$ billions per year. Data years used: "
-        + ", ".join(f"{k} {v}" for k, v in {**SOURCE_YEARS, "everything else": YEAR}.items())
+        + ", ".join(
+            f"{k} {v}" for k, v in {**SOURCE_YEARS, "everything else": YEAR}.items()
+        )
         + ". Different BEA tables are on slightly different vintages, so totals can differ by a few percent.",
     )
 
@@ -1231,7 +1252,12 @@ def main():
     # Federal government, Fed, RoW
     add("FED_SRC", "SL", "grants-in-aid to states & localities", nipa["grants"])
     add("FED_SRC", "FRB", "interest on Treasuries held by the Fed", fed_tsy_int)
-    add("I:" + bank_code, "FRB", "mortgage-backed securities interest passed to the Fed", fed_mbs_int)
+    add(
+        "I:" + bank_code,
+        "FRB",
+        "mortgage-backed securities interest passed to the Fed",
+        fed_mbs_int,
+    )
     add("FRB", "FED_SINK", "Fed remittances to Treasury", nipa["fed_frb_remit"])
     add("FRB", "I:" + bank_code, "interest on reserve balances", fedfin["int_reserves"])
     for h in range(H):
@@ -1242,10 +1268,14 @@ def main():
             fedfin["int_repo"] * hh["interest"][h],
         )
     fed_loss = (
-        fedfin["int_reserves"] + fedfin["int_repo"] + nipa["fed_frb_remit"]
+        fedfin["int_reserves"]
+        + fedfin["int_repo"]
+        + nipa["fed_frb_remit"]
         - fedfin["securities_income"]
     )
-    add("FED_SRC", "FRB", "Fed losses funded by new reserves (deferred asset)", fed_loss)
+    add(
+        "FED_SRC", "FRB", "Fed losses funded by new reserves (deferred asset)", fed_loss
+    )
     add(
         "FED_SRC", "ROW_SINK", "interest on Treasuries held abroad", nipa["fed_int_row"]
     )

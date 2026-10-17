@@ -19,6 +19,7 @@ const SECTOR_COLORS = {
   'Trade & transport': '#bcbd22',
   'Services': '#1f77b4',
   'Investment': '#e377c2',
+  'Pensions': '#8c6d31',
   'Rest of world': '#7f7f7f',
 };
 const color = s => SECTOR_COLORS[s] || '#444';
@@ -452,13 +453,13 @@ const UI_ASSUMPTIONS = [
   ['Layout', 'Nodes are sorted by V and cut into equal-count columns (left = highest V). Within a column, nodes are sorted top-to-bottom by connectivity = number of counterparties with an edge ≥ min edge (ties broken by throughput). Alternate rows are nudged right for legibility. Column labels show the mean V of that column. Circle area ∝ annual throughput; sources have black outlines, sinks dashed.'],
   ['Path highlighting', 'Clicking a node attributes flows proportionally ("money is fungible inside a node"): e.g. depth 2 downstream shows the node\'s outflows, plus the outflows of each recipient scaled by the share of that recipient\'s spending that came from the selected node. Upstream is the mirror image using inflow shares. Flows below 0.2% of the node\'s total are hidden.'],
   ['Random dollar', 'A dollar is a random walk on the annual flow network: at each node the next payee is chosen with probability = edge flow / node outflow; the time held is exponential with the node\'s mean holding time. Starting points are creation events chosen with probability ∝ their annual outflow. When you require nodes to be visited, the walk is sampled backwards from the first required node using inflow shares (exact because every node balances) and forwards from it, then rejection-sampled for the remaining nodes and creation-source filter. Transaction type is drawn ∝ the amounts of each type on that edge.'],
-  ['What "creation" and "destruction" mean here', 'Federal spending creates money and federal taxes destroy it (MMT view; Treasury/Fed consolidated except the Fed\'s own interest income and remittances). Export receipts are dollars entering the domestic economy, import payments are dollars leaving it (they are not destroyed globally). Bank credit and net saving are the private ("horizontal") creation/destruction channels that close every node\'s budget.'],
+  ['What "creation" and "destruction" mean here', 'Federal spending creates money and federal taxes destroy it (MMT view; Treasury/Fed consolidated except the Fed\'s own interest income and remittances). Export receipts are dollars entering the domestic economy, import payments are dollars leaving it (they are not destroyed globally). Pension contributions leave circulation into retirement funds and pension benefits re-enter it. Bank credit and net saving are the private ("horizontal") creation/destruction channels that close every node\'s budget.'],
 ];
 function renderAssumptions() {
   const a = DATA.assumptions.map(x => `<h4>${esc(x.title)}</h4><p>${esc(x.text)}</p>`).join('');
   const u = UI_ASSUMPTIONS.map(([t, x]) => `<h4>${esc(t)}</h4><p>${esc(x)}</p>`).join('');
   const s = DATA.sources.map(x => `<li><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a></li>`).join('');
-  const totals = ['FED_SRC', 'ROW_SRC', 'CREDIT', 'FED_SINK', 'ROW_SINK', 'SAVING'].map(id => {
+  const totals = ['FED_SRC', 'ROW_SRC', 'CREDIT', 'PEN_SRC', 'FED_SINK', 'ROW_SINK', 'SAVING', 'PEN_SINK'].map(id => {
     const n = byId.get(id);
     return `<tr><td>${esc(n.name)}</td><td class="num">${fmt(n.kind === 'source' ? n.out : n.in)}</td></tr>`;
   }).join('');

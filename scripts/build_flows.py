@@ -30,7 +30,6 @@ CAP_DWELL_DAYS = (
 )
 FRB_DWELL_DAYS = 7.0  # Fed remits earnings to Treasury weekly
 IOER = 25.9e3  # Fed interest paid on reserve balances 2017 (approx, Fed annual report)
-PENSION_SPLIT = 0.5  # share of employer pension+insurance contributions to pension funds (rest to insurers)
 HH_INTEREST_DEPOSITORY = (
     0.7  # share of household interest payments going to banks (rest non-bank lenders)
 )
@@ -136,6 +135,19 @@ NIPA_SERIES = {
     "pce": "DPCERC",
     "exports": "B020RC",
     "imports": "B021RC",
+    # NIPA 7.20 (all pension plans) and 7.23 (federal plans)
+    "pen_emp": "Y203RC",
+    "pen_imp_emp": "Y604RC",
+    "pen_hh": "Y208RC",
+    "pen_mint": "Y210RC",
+    "pen_imp_int": "Y609RC",
+    "pen_div": "Y234RC",
+    "pen_benefits": "Y235RC",
+    "pen_admin": "Y204RC",
+    "fpen_emp": "Y270RC",
+    "fpen_hh": "Y276RC",
+    "fpen_mint": "Y281RC",
+    "fpen_benefits": "Y293RC",
 }
 
 ASSUMPTIONS = []
@@ -444,14 +456,19 @@ def main():
                 return c
         raise SystemExit(f"industry not found: {name_part}")
 
-    pension_code = find("Funds, trusts")
+    funds_code = find("Funds, trusts")
     insurer_code = find("Insurance carriers, except direct life")
     bank_code = find("Monetary authorities")
     nonbank_code = find("Nondepository credit")
     comp_io_total = float(sum(VA["V00100"][j] for j in ind_keep))
-    pen_frac = nipa["emp_pension"] / nipa["comp"]
-    employer_insurance = comp_io_total * pen_frac * (1 - PENSION_SPLIT)
-    employer_pension = comp_io_total * pen_frac * PENSION_SPLIT
+    comp_fed = float(sum(VA["V00100"][j] for j in ind_keep if gov_level(inds[j]) == "federal"))
+    comp_nonfed = comp_io_total - comp_fed
+    # NIPA's (negative) imputed DB contributions are non-cash, so use actual contributions only
+    employer_insurance = nipa["emp_pension"] - (nipa["pen_emp"] + nipa["pen_imp_emp"])
+    pen_emp_nonfed = nipa["pen_emp"] - nipa["fpen_emp"]
+    pen_hh_nonfed = nipa["pen_hh"] - nipa["fpen_hh"]
+    pen_int_nonfed = nipa["pen_mint"] - nipa["fpen_mint"]
+    pen_ben_nonfed = nipa["pen_benefits"] - nipa["fpen_benefits"]
 
     # Health: Medicare/Medicaid and employer-funded insurers pay providers directly
     health = np.array([c.startswith(("621", "622", "623")) for c in coms])
@@ -554,13 +571,21 @@ def main():
     gos_priv_tot = sum(gos_priv[j] for j in private)
     fed_int_to_frb = nipa["fed_frb_remit"] + IOER
     fed_int_res = nipa["fed_interest"] - nipa["fed_int_row"]
-    fed_int_persons = fed_int_res - fed_int_to_frb
-    ind_interest = nipa["pers_interest"] - fed_int_persons - nipa["sl_interest"]
+    # interest the Treasury pays its own employee pension funds is intra-federal: netted out
+    fed_int_persons = fed_int_res - fed_int_to_frb - nipa["fpen_mint"]
+    ind_interest = (
+        nipa["pers_interest"]
+        - (fed_int_res - fed_int_to_frb)
+        - nipa["sl_interest"]
+        - nipa["pen_imp_int"]
+    )
     payouts = {
         "corporate income tax (federal)": ("FED_SINK", nipa["fed_corp"]),
         "corporate income tax (state & local)": ("SL", nipa["sl_corp"]),
-        "dividends": ("div", nipa["pers_div"]),
-        "interest paid to households": ("interest", ind_interest),
+        "dividends": ("div", nipa["pers_div"] - nipa["pen_div"]),
+        "dividends to pension funds": ("PEN_SINK", nipa["pen_div"]),
+        "interest paid to households": ("interest", ind_interest - pen_int_nonfed),
+        "interest to pension funds": ("PEN_SINK", pen_int_nonfed),
         "proprietors' income": ("prop", nipa["proprietors"]),
     }
     payout_total = sum(v for _, v in payouts.values())
@@ -577,17 +602,25 @@ def main():
             "employer social insurance contributions",
             comp[j] * si_frac,
         )
-        add(
-            src,
-            "I:" + pension_code,
-            "employer pension contributions",
-            comp[j] * pen_frac * PENSION_SPLIT,
-        )
+        if gov_level(inds[j]) == "federal":
+            add(
+                src,
+                "FED_SINK",
+                "employer contributions to federal employee pensions",
+                nipa["fpen_emp"] * comp[j] / comp_fed,
+            )
+        else:
+            add(
+                src,
+                "PEN_SINK",
+                "employer pension contributions",
+                pen_emp_nonfed * comp[j] / comp_nonfed,
+            )
         add(
             src,
             "I:" + insurer_code,
             "employer health/insurance contributions",
-            comp[j] * pen_frac * (1 - PENSION_SPLIT),
+            employer_insurance * comp[j] / comp_io_total,
         )
         t = max(tpi[j], 0)
         add(src, "FED_SINK", "taxes on production & imports", t * tpi_fed_frac)
@@ -604,7 +637,7 @@ def main():
         share = gos_priv[j] / gos_priv_tot
         for typ, (dst, total) in payouts.items():
             amt = total * share
-            if dst in ("FED_SINK", "SL"):
+            if dst in ("FED_SINK", "SL", "PEN_SINK"):
                 add(src, dst, typ, amt)
             else:
                 for h in range(H):
@@ -619,8 +652,12 @@ def main():
         "Paying out value added",
         f"Compensation is split using NIPA 2017 ratios: {w_frac:.1%} wages & salaries to households "
         f"(by BEA compensation decile shares), {si_frac:.1%} employer social-insurance contributions "
-        f"straight to the Federal govt, {pen_frac:.1%} employer pension & insurance contributions "
-        f"({PENSION_SPLIT:.0%} to pension funds, rest to insurers). Taxes on production go "
+        f"straight to the Federal govt, employer pension contributions to the pension sink "
+        f"(see Pensions), and employer health/insurance contributions "
+        f"(${employer_insurance/1e3:.0f}B = NIPA employer pension+insurance contributions minus cash "
+        "pension contributions) to insurers, all in proportion to each industry's compensation. Cash "
+        "paid slightly exceeds BEA compensation because NIPA's negative imputed pension contributions "
+        "are excluded; the difference is covered by the credit node. Taxes on production go "
         f"{tpi_fed_frac:.1%} Federal / rest State & local (NIPA ratio, applied uniformly); subsidies ignored.",
     )
     assume(
@@ -628,8 +665,10 @@ def main():
         f"Private gross operating surplus (${gos_priv_tot/1e3:,.0f}B after removing owner-occupied "
         "housing) is split in the SAME proportions for every industry: corporate income taxes (federal "
         f'${nipa["fed_corp"]/1e3:.0f}B, S&L ${nipa["sl_corp"]/1e3:.0f}B), dividends '
-        f'${nipa["pers_div"]/1e3:.0f}B, interest to households ${ind_interest/1e3:.0f}B (personal '
-        "interest income minus that paid by governments), proprietors' income "
+        f'${nipa["pers_div"]/1e3:.0f}B (of which ${nipa["pen_div"]/1e3:.0f}B to pension funds), cash '
+        f"interest ${ind_interest/1e3:.0f}B (personal interest income minus that paid by governments "
+        f'and minus ${nipa["pen_imp_int"]/1e3:.0f}B of non-cash imputed interest on pension claims; '
+        f"${pen_int_nonfed/1e3:.0f}B of it to pension funds), proprietors' income "
         f'${nipa["proprietors"]/1e3:.0f}B; the remainder '
         f"(${(gos_priv_tot-payout_total)/1e3:,.0f}B) is retained and sent to the Private investment pool. "
         "Each income type is distributed to households by its own BEA decile shares. In reality payout "
@@ -711,24 +750,47 @@ def main():
             nipa["hh_transfers_row"] * hh["comp"][h],
         )
         add(
-            "I:" + pension_code,
             hid,
-            "pension benefits paid",
-            employer_pension * hh["benefits"][h],
+            "PEN_SINK",
+            "employee pension contributions (401k etc.)",
+            pen_hh_nonfed * hh["comp"][h],
         )
+        add(
+            "PEN_SRC",
+            hid,
+            "pension benefits & withdrawals",
+            pen_ben_nonfed * hh["benefits"][h],
+        )
+        add(
+            "FED_SRC",
+            hid,
+            "federal employee & military pensions",
+            nipa["fpen_benefits"] * hh["benefits"][h],
+        )
+    add("PEN_SRC", "I:" + funds_code, "pension plan administrative fees", nipa["pen_admin"])
     assume(
         "Pensions",
-        'Employer pension contributions flow to "Funds, trusts and other financial vehicles", which are '
-        "assumed to pay out the same amount as pension benefits that year (steady state), distributed "
-        "like government social benefits (a proxy for where retirees sit in the income distribution). "
-        "Pension benefits are not personal income in NIPA, but they are real money flows.",
+        "Pension funds are a store of money for the future, so (like the Federal govt and RoW) they are "
+        "split into a SINK and a SOURCE. Cash flows are from NIPA Table 7.20 (all DB + DC plans), with "
+        "federal employee plans (Table 7.23) consolidated into the Federal government. Into the sink: "
+        f"employer contributions ${pen_emp_nonfed/1e3:.0f}B (by industry compensation), employee "
+        f"contributions ${pen_hh_nonfed/1e3:.0f}B (by household wage shares), dividends "
+        f'${nipa["pen_div"]/1e3:.0f}B and monetary interest ${pen_int_nonfed/1e3:.0f}B (from industries '
+        "by operating-surplus share). Out of the source: benefits & withdrawals "
+        f"${pen_ben_nonfed/1e3:.0f}B to households (distributed like government social benefits, a "
+        f'proxy for where retirees sit) and ${nipa["pen_admin"]/1e3:.0f}B of administrative fees to the '
+        '"Funds, trusts & other financial vehicles" industry. Federal: agencies\' contributions '
+        f'(${nipa["fpen_emp"]/1e3:.0f}B) go to the Federal sink, federal pensions '
+        f'(${nipa["fpen_benefits"]/1e3:.0f}B) come from the Federal source, and Treasury interest to '
+        "its own funds is netted out. Pension funds' purchases and sales of existing securities are "
+        "asset swaps between savers and are not modelled.",
     )
     assume(
         "Taxes & transfers by household group",
         'Personal income taxes (federal and S&L) use BEA "Taxes" decile shares; employee social '
         'insurance contributions use the BEA "Contributions" shares; social benefits (ex Medicare/'
         'Medicaid) use the "Government social benefits" shares; interest on govt debt uses household '
-        "interest-income shares (ultimate ownership via funds/pensions is collapsed onto households). "
+        "interest-income shares (ownership via mutual funds is collapsed onto households). "
         "Household interest payments follow PCE shares and go "
         f"{HH_INTEREST_DEPOSITORY:.0%} to banks / rest to non-bank lenders. Remittances abroad follow "
         "wage shares.",
@@ -756,7 +818,8 @@ def main():
         "Rest of World is split into a SOURCE (export receipts bring dollars in) and a SINK (import "
         'payments send dollars out). Bank lending is the "horizontal" source of money: every node\'s '
         'gap between outflows and inflows is filled by "Bank credit & dis-saving" (source) or sent to '
-        '"Net saving & debt repayment" (sink). Federal interest: '
+        '"Net saving & debt repayment" (sink). Pension funds are also split into a source and a sink '
+        "(see Pensions). Federal interest: "
         f"${fed_int_to_frb/1e3:.0f}B to the Federal Reserve (= remittances + interest on reserves), "
         f'${nipa["fed_int_row"]/1e3:.0f}B abroad, ${fed_int_persons/1e3:.0f}B to households.',
     )
@@ -816,6 +879,10 @@ def main():
             "sector": ind_sector(codes[0]),
             "output": float(sum(output[j] for j in members)),
         }
+    if "I:" + funds_code in node_meta:
+        node_meta["I:" + funds_code]["name"] = (
+            "Funds, trusts & other financial vehicles (mutual funds, trusts, fund admin)"
+        )
     assume(
         "Industry nodes",
         f"The {len(ind_keep)} BEA detail industries are reduced to {len(node_meta)} nodes: the {k} "
@@ -860,6 +927,16 @@ def main():
         "SAVING": (
             "Net saving & debt repayment (horizontal destruction)",
             "Monetary & credit",
+            "sink",
+        ),
+        "PEN_SRC": (
+            "Retirement funds - benefits paid out (pensions)",
+            "Pensions",
+            "source",
+        ),
+        "PEN_SINK": (
+            "Retirement funds - contributions & investment income (pensions)",
+            "Pensions",
             "sink",
         ),
     }

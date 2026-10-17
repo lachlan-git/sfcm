@@ -21,7 +21,9 @@ RAW = ROOT / "data" / "raw"
 OUT_DIR = ROOT / "web" / "data"
 YEAR = 2025  # overridden by --year
 IO_DETAIL_YEAR = 2017  # only year BEA publishes the 402-industry detail tables
-SUMMARY_LAST = 2023  # last year of BEA's summary Use/Make tables; later years are projected
+SUMMARY_LAST = (
+    2023  # last year of BEA's summary Use/Make tables; later years are projected
+)
 SOURCE_YEARS = {}
 
 # ---- Tunable assumptions (all $ millions unless noted) -------------------------------
@@ -534,7 +536,9 @@ def project_summary(su, sm):
     for (r, c), v in su.items():
         if c in GDPIND_LINES:
             L = GDPIND_LINES[c]
-            if r in va_rows:  # TVA112 lays out each industry as 4 lines: total + 3 components
+            if (
+                r in va_rows
+            ):  # TVA112 lays out each industry as 4 lines: total + 3 components
                 pct = va_pct(4 * (L - 1) + 1 + va_rows[r], YEAR)
                 use[(r, c)] = (
                     va(L, YEAR) * pct / 100
@@ -611,9 +615,14 @@ def load_household_shares():
     d = d[
         (d.Year == dpi_year) & (d.Ranking == "Equivalized Disposable Personal Income")
     ]
-    def num(v):  # recent years publish top shares as ranges, e.g. "[0.137-0.143]": use the midpoint
+
+    def num(
+        v,
+    ):  # recent years publish top shares as ranges, e.g. "[0.137-0.143]": use the midpoint
         m = re.fullmatch(r"\[([\d.]+)-([\d.]+)\]", str(v).strip())
-        return (float(m[1]) + float(m[2])) / 2 if m else pd.to_numeric(v, errors="coerce")
+        return (
+            (float(m[1]) + float(m[2])) / 2 if m else pd.to_numeric(v, errors="coerce")
+        )
 
     d["Value"] = d["Value"].map(num).astype(float)
 
@@ -1409,10 +1418,7 @@ def main():
             fedfin["int_repo"] * hh["interest"][h],
         )
     fed_loss = (
-        fedfin["int_reserves"]
-        + fedfin["int_repo"]
-        + nipa["fed_frb_remit"]
-        - sec_income
+        fedfin["int_reserves"] + fedfin["int_repo"] + nipa["fed_frb_remit"] - sec_income
     )
     add(
         "FED_SRC", "FRB", "Fed losses funded by new reserves (deferred asset)", fed_loss
@@ -1709,7 +1715,9 @@ def main():
         naics = [x for x in naics if x]
         if not naics:
             return NODE_URLS["GOV_IND"]
-        if len(naics) > 1:  # grouped node: longest common NAICS prefix (at least 2 digits)
+        if (
+            len(naics) > 1
+        ):  # grouped node: longest common NAICS prefix (at least 2 digits)
             p = naics[0]
             while len(p) > 2 and not all(x.startswith(p) for x in naics):
                 p = p[:-1]

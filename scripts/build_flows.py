@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+import openpyxl
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,9 +26,6 @@ HH_DEPOSITS = (
 )
 BUS_DEPOSITS = 2.6e6  # nonfinancial business deposits + currency, approx Fed Z.1, 2017
 SL_DEPOSITS = 0.4e6  # state & local govt deposits + currency, approx Fed Z.1, 2017
-CAP_DWELL_DAYS = (
-    90.0  # retained earnings wait this long on average before being invested
-)
 FRB_DWELL_DAYS = 7.0  # Fed remits earnings to Treasury weekly
 IOER = 25.9e3  # Fed interest paid on reserve balances 2017 (approx, Fed annual report)
 HH_INTEREST_DEPOSITORY = (
@@ -151,6 +149,175 @@ NIPA_SERIES = {
 }
 
 ASSUMPTIONS = []
+
+# BEA Fixed Assets industry code(s) -> BEA IO detail-code prefixes (longest prefix wins)
+FA_PREFIXES = {
+    "110C": ["111", "112"],
+    "113F": ["113", "114", "115"],
+    "2110": ["211"],
+    "2120": ["212"],
+    "2130": ["213"],
+    "2211": ["2211"],
+    "2212": ["2212"],
+    "2213": ["2213"],
+    "2300": ["23"],
+    "3210": ["321"],
+    "3270": ["327"],
+    "3310": ["331"],
+    "3320": ["332"],
+    "3330": ["333"],
+    "3340": ["334"],
+    "3350": ["335"],
+    "336M": ["3361", "3362", "3363"],
+    "336O": ["3364", "3365", "3366", "3369"],
+    "3370": ["337"],
+    "3380": ["3391"],
+    "3390": ["3399"],
+    "3110": ["311"],
+    "3120": ["312"],
+    "313T": ["313", "314"],
+    "315A": ["315", "316"],
+    "3220": ["322"],
+    "3230": ["323"],
+    "3240": ["324"],
+    "3250": ["325"],
+    "3260": ["326"],
+    "4210": ["423", "425"],
+    "4220": ["424"],
+    "4410": ["441"],
+    "4450": ["445"],
+    "4520": ["452"],
+    "442R": ["44", "45", "4A"],
+    "4810": ["481"],
+    "4820": ["482"],
+    "4830": ["483"],
+    "4840": ["484"],
+    "4850": ["485"],
+    "4860": ["486"],
+    "487S": ["487", "488", "492"],
+    "4930": ["493"],
+    "5110": ["511"],
+    "5120": ["512"],
+    "5130": ["515", "517"],
+    "5140": ["518", "519"],
+    "5210+5221+5223": ["52A"],
+    "5229": ["522"],
+    "5230": ["523"],
+    "524A": ["5241"],
+    "5243": ["5242"],
+    "5250": ["525"],
+    "5310": ["531"],
+    "5320": ["532", "533"],
+    "5411": ["5411"],
+    "5415": ["5415"],
+    "5412": ["541"],
+    "5500": ["55"],
+    "5610": ["561"],
+    "5620": ["562"],
+    "6100": ["61"],
+    "6210": ["621"],
+    "622H": ["622"],
+    "6230": ["623"],
+    "6240": ["624"],
+    "711A": ["711", "712"],
+    "7130": ["713"],
+    "7210": ["721"],
+    "7220": ["722"],
+    "8100": ["81"],
+}
+FA_CATEGORIES = {"EQUIPMENT": "F02E00", "STRUCTURES": "F02S00", "IPP": "F02N00"}
+# BEA fixed-asset type -> IO commodity-code prefixes it is bought as. Commodities not claimed by
+# any asset (trade/transport margins, installation, brokers' fees) are shared across all assets.
+ASSET_COMMODITIES = {
+    # equipment
+    "EP1A": ["3341"],
+    "EP1B": ["3341"],
+    "EP1C": ["3341"],
+    "EP1D": ["3341"],
+    "EP1E": ["3341"],
+    "EP1F": ["3341"],
+    "EP1G": ["3341"],
+    "EP1H": ["541512"],
+    "EP20": ["3342"],
+    "EP34": ["3391"],
+    "EP35": ["334510", "334517"],
+    "EP36": ["334511", "334513", "334514", "334515", "334516", "33451A"],
+    "EP31": ["333316", "333314"],
+    "EP12": ["339940", "333318"],
+    "EI11": ["325180"],
+    "EI12": ["332"],
+    "EI21": ["333611", "332410"],
+    "EI22": ["333618"],
+    "EI30": ["3335"],
+    "EI40": ["3332", "333993"],
+    "EI50": ["3339", "3334"],
+    "EI60": ["3353", "3359"],
+    "ET11": ["336112"],
+    "ET12": ["336120", "3362"],
+    "ET20": ["336111"],
+    "ET30": ["3364"],
+    "ET40": ["3366"],
+    "ET50": ["336500"],
+    "EO11": ["33712", "337110"],
+    "EO12": ["3372", "337127", "337900"],
+    "EO30": ["333111", "333112"],
+    "EO21": ["333111"],
+    "EO40": ["333120"],
+    "EO22": ["333120"],
+    "EO50": ["333130"],
+    "EO60": ["333318", "333415", "3334"],
+    "EO71": ["3352"],
+    "EO72": ["3351", "3359"],
+    "EO80": ["339", "3369", "3343", "314110", "326"],
+    # structures
+    "SOO1": ["2332A0"],
+    "SB31": ["233210"],
+    "SB32": ["233210"],
+    "SOO2": ["233210"],
+    "SC03": ["2332A0"],
+    "SC04": ["2332A0"],
+    "SC01": ["2332A0"],
+    "SOMO": ["2332A0"],
+    "SC02": ["2332A0"],
+    "SI00": ["233230"],
+    "SU30": ["233240"],
+    "SU60": ["233240"],
+    "SU40": ["233240"],
+    "SU50": ["233240"],
+    "SU20": ["233240"],
+    "SM01": ["213111", "21311A"],
+    "SM02": ["21311A"],
+    "SB10": ["2332D0"],
+    "SB20": ["233262"],
+    "SB41": ["2332A0"],
+    "SB42": ["2332D0"],
+    "SB43": ["2332C0"],
+    "SB45": ["2332C0"],
+    "SU11": ["2332C0"],
+    "SU12": ["2332C0"],
+    "SB44": ["2332C0"],
+    "SB46": ["2332C0"],
+    "SN00": ["2332D0"],
+    "SO01": ["2332D0"],
+    "SO02": ["2332D0"],
+    "SO03": ["2332D0"],
+    "SO04": ["2332C0"],
+    # intellectual property products (RD* handled by prefix below)
+    "ENS1": ["511200"],
+    "ENS2": ["541511"],
+    "ENS3": ["541511"],
+    "AE10": ["512100"],
+    "AE20": ["512100", "515"],
+    "AE30": ["5111"],
+    "AE40": ["512200", "711500"],
+    "AE50": ["711", "5419"],
+}
+
+
+def asset_commodities(asset):
+    if asset.startswith("RD"):
+        return ["541700"]
+    return ASSET_COMMODITIES.get(asset, [])
 
 
 def assume(title, text):
@@ -310,6 +477,60 @@ def load_household_shares():
 
 
 # ---- Model -----------------------------------------------------------------------------
+def load_fixed_assets():
+    """2017 investment by BEA fixed-asset industry x category x asset type, and residential by tenure."""
+    # the BEA workbook is slow to parse, so cache the few numbers we need
+    cache = RAW / "fa" / f"fa_{YEAR}_assets_cache.json"
+    if cache.exists():
+        c = json.loads(cache.read_text())
+        return c["inv"], c["res"]
+    codes = sorted({p for key in FA_PREFIXES for p in key.split("+")})
+    # sheets declare huge dimensions, so read a bounded block with openpyxl instead of pandas
+    wb = openpyxl.load_workbook(
+        RAW / "fa" / "detailnonres_inv1.xlsx", read_only=True, data_only=True
+    )
+    raw = {}
+    for code in codes:
+        rows = list(
+            wb[code].iter_rows(min_row=1, max_row=110, max_col=130, values_only=True)
+        )
+        header = next(
+            r for r in rows if r[0] is not None and str(r[0]).strip() == "Asset Codes"
+        )
+        col = [str(v).split(".")[0] if v is not None else "" for v in header].index(
+            str(YEAR)
+        )
+        assets = {cat: {} for cat in FA_CATEGORIES}
+        current = None
+        for r in rows:
+            label = str(r[0]).strip() if r[0] is not None else ""
+            if label in FA_CATEGORIES:
+                current = label
+            elif current and label and isinstance(r[col], (int, float)):
+                assets[current][label] = float(r[col])
+        raw[code] = assets
+    wb.close()
+    inv = {}
+    for key in FA_PREFIXES:
+        inv[key] = {cat: defaultdict(float) for cat in FA_CATEGORIES}
+        for p in key.split("+"):
+            for cat in FA_CATEGORIES:
+                for a, v in raw[p][cat].items():
+                    inv[key][cat][a] += v
+
+    r = pd.read_excel(
+        RAW / "fa" / "detailresidential.xlsx", sheet_name="Investment ", header=None
+    )
+    col = list(r.iloc[5]).index(float(YEAR))
+    labels = r.iloc[:, 1].astype(str).str.strip()
+    vals = pd.to_numeric(r.iloc[:, col], errors="coerce")
+    total = float(vals[labels == "RESIDENTIAL TOTALS"].iloc[0])
+    owner = float(vals[labels.str.startswith("Owner-occupied")].sum())
+    res = {"total": total, "owner": owner}
+    cache.write_text(json.dumps({"inv": inv, "res": res}))
+    return inv, res
+
+
 def category(code):
     for cat, prefixes in CATEGORY_PREFIXES:
         if any(code.startswith(p) for p in prefixes):
@@ -377,9 +598,13 @@ def main():
         "Base year and core data",
         f"Everything is a snapshot of annual flows in {YEAR}. Inter-industry flows come from the BEA "
         f"detailed (402-industry) Use and Make tables, before redefinitions, producer prices. Government, "
-        "tax, transfer and income totals come from NIPA tables 1.12, 2.1, 3.2, 3.3, 3.12, 4.1. Household "
-        "splits come from BEA Distribution of Personal Income (equivalized DPI ranking) and the BEA/BLS "
-        "joint DPI-PCE distribution. Units shown are $ billions per year.",
+        "tax, transfer and income totals come from NIPA tables 1.12, 2.1, 3.2, 3.3, 3.12, 4.1; pension "
+        "cash flows from NIPA 7.20 (all plans) and 7.23 (federal plans). Investment by industry and "
+        "asset type, and residential investment by tenure, come from BEA Fixed Assets detailed "
+        "estimates. Household splits come from BEA Distribution of Personal Income (equivalized DPI "
+        "ranking) and the BEA/BLS joint DPI-PCE distribution. Units shown are $ billions per year. "
+        "Note: the IO tables are the 2017 benchmark while the NIPA and Fixed Assets figures are the "
+        "current vintage, so totals from different tables can differ by a few percent.",
     )
 
     # Drop imputed / non-monetary items
@@ -530,7 +755,6 @@ def main():
     # Government purchases
     fed_cols = [c for c in fd if c.startswith(("F06", "F07"))]
     sl_cols = [c for c in fd if c.startswith("F10")]
-    inv_cols = [c for c in fd if c.startswith("F02")]
     buy(
         "FED_SRC",
         sum(np.clip(F[:, fdi[c]], 0, None) for c in fed_cols),
@@ -541,10 +765,91 @@ def main():
         sum(np.clip(F[:, fdi[c]], 0, None) for c in sl_cols),
         "state & local purchases",
     )
-    inv_vec = sum(np.clip(F[:, fdi[c]], 0, None) for c in inv_cols) + np.clip(
-        F[:, fdi["F03000"]], 0, None
+    # ---- Investment: each industry buys its own capital goods (BEA Fixed Assets shares)
+    fa_inv, fa_res = load_fixed_assets()
+    out_vec = VA["T008"]
+    prefix_list = [(p, fa) for fa, ps in FA_PREFIXES.items() for p in ps]
+    fa_members = defaultdict(list)
+    unmatched = []
+    for j in ind_keep:
+        c = inds[j]
+        if gov_level(c):
+            continue
+        match = max(
+            ((p, fa) for p, fa in prefix_list if c.startswith(p)),
+            key=lambda t: len(t[0]),
+            default=None,
+        )
+        if match:
+            fa_members[match[1]].append(j)
+        else:
+            unmatched.append(c)
+    cat_label = {
+        "EQUIPMENT": "equipment",
+        "STRUCTURES": "structures",
+        "IPP": "software & R&D",
+    }
+    groups = list(fa_members)
+    bridge_gap = {}
+    for cat, col in FA_CATEGORIES.items():
+        vec = np.clip(F[:, fdi[col]], 0, None)
+        assets = sorted(
+            {a for fa in groups for a, v in fa_inv[fa][cat].items() if v > 0}
+        )
+        A = np.array(
+            [sum(fa_inv[fa][cat].get(a, 0.0) for fa in groups) for a in assets]
+        )
+        mask = np.zeros((len(coms), len(assets)), dtype=bool)
+        for k, a in enumerate(assets):
+            prefixes = tuple(asset_commodities(a))
+            if prefixes:
+                mask[:, k] = [c.startswith(prefixes) for c in coms]
+        present = vec > 0
+        mask[present & ~mask.any(1), :] = True
+        mask[:, ~(mask & present[:, None]).any(0)] = present[:, None]
+        seed = np.where(mask, vec[:, None] * A[None, :], 0.0)
+        # B[c, k] = $ of commodity c bought as asset type k; matches IO and fixed-asset totals
+        B = ras(seed, vec, A * vec.sum() / A.sum())
+        row = B.sum(1)
+        B *= np.divide(vec, row, out=np.zeros_like(row), where=row > 0)[:, None]
+        bridge_gap[cat] = float(
+            np.abs(B.sum(0) - A * vec.sum() / A.sum()).sum() / vec.sum()
+        )
+        for fa, members in fa_members.items():
+            w = np.array([fa_inv[fa][cat].get(a, 0.0) for a in assets]) / A
+            fa_vec = B @ w
+            mem_out = sum(out_vec[j] for j in members)
+            for j in members:
+                buy(
+                    "I:" + inds[j],
+                    fa_vec * out_vec[j] / mem_out,
+                    f"investment: {cat_label[cat]}",
+                )
+
+    res_vec = np.clip(F[:, fdi["F02R00"]], 0, None)
+    owner_share = fa_res["owner"] / fa_res["total"]
+    for h in range(H):
+        buy(
+            hh_ids[h],
+            res_vec * owner_share * hh["comp"][h],
+            "new homes & renovations (owner-occupied)",
+        )
+    buy(
+        "I:531HST",
+        res_vec * (1 - owner_share),
+        "rental housing construction (tenant-occupied)",
     )
-    buy("CAP", inv_vec, "investment purchases")
+
+    inv_chg = np.clip(F[:, fdi["F03000"]], 0, None)
+    holders = [
+        j
+        for j in ind_keep
+        if hier.get(inds[j], {}).get("sector") in ("11", "21", "31G", "42", "44RT")
+    ]
+    holders_out = sum(out_vec[j] for j in holders)
+    for j in holders:
+        buy("I:" + inds[j], inv_chg * out_vec[j] / holders_out, "inventory build-up")
+
     for i in np.nonzero(exports > 0)[0]:
         to_ind = D[:, i] * exports[i]
         for a in np.nonzero(to_ind > 0)[0]:
@@ -557,9 +862,32 @@ def main():
     )
     assume(
         "Investment",
-        "All private fixed investment (equipment, IP, structures, residential) and positive inventory "
-        'change is paid from a single "Private investment pool" node funded by industries\' retained '
-        "operating surplus; any shortfall is financed by new bank credit. Inventory draw-downs are ignored.",
+        "Each industry pays for its own capital goods - there is no investment pool. BEA Fixed Assets "
+        f"detailed estimates for {YEAR} give private nonresidential investment by {len(fa_members)} "
+        "fixed-asset industries x ~95 asset types (e.g. manufacturing structures, mining & oilfield "
+        "machinery, light trucks, prepackaged software, R&D). Each asset type is bridged to the IO "
+        "commodities it is bought as (hand-made concordance by NAICS code, e.g. 'mining & oilfield "
+        "machinery' -> 333130, 'manufacturing structures' -> 233230, all R&D -> 541700); trade and "
+        "transport margins, installation and brokers' fees are shared across all asset types. A RAS "
+        "balance makes the asset x commodity bridge match the IO investment columns (F02E00, F02S00, "
+        "F02N00) exactly and the fixed-asset type totals as closely as the concordance allows "
+        "(remaining mismatch vs fixed-asset totals: "
+        + ", ".join(f"{k.lower()} {v:.1%}" for k, v in bridge_gap.items())
+        + "). So each industry buys its own mix of capital goods, scaled to the IO totals. Within a "
+        "fixed-asset industry the amount is split among its IO detail industries by gross output. "
+        "Residential investment is split by "
+        f"tenure from BEA's residential detail: {owner_share:.0%} owner-occupied, paid by household "
+        "groups in proportion to their wage shares (a proxy for who buys/renovates homes), and the rest "
+        "(rental housing) paid by the tenant-occupied housing industry. Positive inventory change is paid "
+        "by goods-producing and trade industries in proportion to output; draw-downs are ignored. "
+        "Retained earnings simply stay with each industry: if an industry invests more than it keeps it "
+        "draws on bank credit, if less it saves. Purchases an industry makes from itself (e.g. construction "
+        "building its own structures) are internal and not shown."
+        + (
+            f" Industries without fixed-asset data: {', '.join(unmatched)}."
+            if unmatched
+            else ""
+        ),
     )
 
     # Value added
@@ -644,12 +972,6 @@ def main():
             else:
                 for h in range(H):
                     add(src, hh_ids[h], typ, amt * hh[dst][h])
-        add(
-            src,
-            "CAP",
-            "retained earnings & depreciation",
-            gos_priv[j] - payout_total * share,
-        )
     assume(
         "Paying out value added",
         f"Compensation is split using NIPA 2017 ratios: {w_frac:.1%} wages & salaries to households "
@@ -672,7 +994,7 @@ def main():
         f'and minus ${nipa["pen_imp_int"]/1e3:.0f}B of non-cash imputed interest on pension claims; '
         f"${pen_int_nonfed/1e3:.0f}B of it to pension funds), proprietors' income "
         f'${nipa["proprietors"]/1e3:.0f}B; the remainder '
-        f"(${(gos_priv_tot-payout_total)/1e3:,.0f}B) is retained and sent to the Private investment pool. "
+        f"(${(gos_priv_tot-payout_total)/1e3:,.0f}B) is retained by the industry to fund its own investment. "
         "Each income type is distributed to households by its own BEA decile shares. In reality payout "
         "ratios differ a lot by industry - this is a major simplification. Cross-border dividends / "
         "interest (other than on federal debt) are not modelled.",
@@ -925,7 +1247,6 @@ def main():
             "Rest of world",
             "sink",
         ),
-        "CAP": ("Private investment pool (retained earnings)", "Investment", "node"),
         "CREDIT": (
             "Bank credit & dis-saving (horizontal creation)",
             "Monetary & credit",
@@ -1025,7 +1346,6 @@ def main():
     for h, hid in enumerate(hh_ids):
         dwell[hid] = HH_DEPOSITS * HH_DEPOSIT_SHARE[h] / outflow[hid] * 365
     dwell["SL"] = SL_DEPOSITS / outflow["SL"] * 365
-    dwell["CAP"] = CAP_DWELL_DAYS
     dwell["FRB"] = FRB_DWELL_DAYS
     assume(
         "How long a dollar sits at a node",
@@ -1034,9 +1354,38 @@ def main():
         f"outflows -> {dwell[next(iter(node_meta))]:.0f} days for every industry. Households: ~$"
         f"{HH_DEPOSITS/1e6:.1f}T of deposits (approx. Z.1), allocated across groups by assumed shares "
         f'{", ".join(f"{s:.1%}" for s in HH_DEPOSIT_SHARE)} (bottom->top, roughly SCF concentration). '
-        f"State & local: ~${SL_DEPOSITS/1e6:.1f}T. Investment pool {CAP_DWELL_DAYS:.0f} days, Fed "
+        f"State & local: ~${SL_DEPOSITS/1e6:.1f}T. Fed "
         f"{FRB_DWELL_DAYS:.0f} days. In the trace each stay is drawn from an exponential distribution "
         'with that mean (memoryless "pool" of money). Sources hold for 0 days; sinks are terminal.',
+    )
+    assume(
+        "Numbers entered by hand (not downloaded)",
+        "These inputs are typed into build_flows.py rather than read from a downloaded file; edit them "
+        "there to test sensitivity. "
+        f"(1) Deposit stocks for holding times: households ${HH_DEPOSITS/1e6:.1f}T, businesses "
+        f"${BUS_DEPOSITS/1e6:.1f}T, state & local ${SL_DEPOSITS/1e6:.1f}T (approximate Fed Z.1 levels), "
+        "and the household deposit shares by income group (rough SCF concentration). "
+        f"(2) Fed interest on reserves ${IOER/1e3:.1f}B (approx. Fed annual report) and a {FRB_DWELL_DAYS:.0f}-day "
+        "Fed holding time. "
+        f"(3) {HH_INTEREST_DEPOSITORY:.0%} of household interest payments go to banks. "
+        f"(4) Medicare+Medicaid capped at {GOV_HEALTH_CAP:.0%} of PCE on health providers; private "
+        "insurance claims capped so all payers together cover at most 95%. "
+        "(5) Household spending tilts by income quintile (approximate BLS CE 2017 budget shares). "
+        f"(6) Edge-pruning threshold ${MIN_EDGE:.0f}M. "
+        "(7) Two concordances: fixed-asset industries -> IO detail industries (by NAICS prefix) and "
+        "fixed-asset types -> IO commodities (by NAICS code). "
+        "(8) Proxies for who in the household distribution receives/pays things BEA does not split: "
+        "pension benefits (like government benefits), owner-occupied housing investment and employee "
+        "pension contributions (like wages), household interest payments (like consumer spending).",
+    )
+    assume(
+        "Not modelled",
+        "Purchases and sales of existing financial assets (stocks, bonds, property) - they are swaps "
+        "between savers and appear only as the net saving / bank credit residuals. Cross-border "
+        "dividends and interest other than on federal debt. Subsidies (netted inside taxes on "
+        "production). Inventory draw-downs. Nonprofit institutions as separate actors (folded into "
+        "households and industries as BEA does). Household type (children, age, etc.). Within-year "
+        "timing: every flow is an annual average.",
     )
 
     nodes = []
@@ -1081,8 +1430,20 @@ def main():
             "url": "https://apps.bea.gov/industry/iTables%20Static%20Files/AllTablesIO.zip",
         },
         {
-            "name": "BEA NIPA flat files (annual)",
+            "name": "BEA NIPA flat files (annual) - tables 1.12, 2.1, 3.2, 3.3, 3.12, 4.1, 7.20, 7.23",
             "url": "https://apps.bea.gov/national/Release/TXT/NipaDataA.txt",
+        },
+        {
+            "name": "BEA NIPA series register (maps series codes to table lines)",
+            "url": "https://apps.bea.gov/national/Release/TXT/SeriesRegister.txt",
+        },
+        {
+            "name": "BEA Fixed Assets: investment in private nonresidential fixed assets by industry and asset type",
+            "url": "https://apps.bea.gov/national/FA2004/Details/xls/detailnonres_inv1.xlsx",
+        },
+        {
+            "name": "BEA Fixed Assets: private residential fixed assets by tenure",
+            "url": "https://apps.bea.gov/national/FA2004/Details/xls/detailresidential.xlsx",
         },
         {
             "name": "BEA Distribution of Personal Income (summary file)",

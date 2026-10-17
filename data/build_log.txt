@@ -1,0 +1,48 @@
+nodes=172 links=19712 sources($B)={'FED_SRC': np.float64(4569.77066222352), 'ROW_SRC': 1857.5611595355106, 'CREDIT': np.float64(3187.52927660189)} sinks($B)={'FED_SINK': np.float64(3796.7858839811306), 'ROW_SINK': np.float64(2941.725910959015), 'SAVING': np.float64(2754.8533034207735)}
+wrote C:\Users\lachl\code\sfcm\web\data\flows.js
+CREDIT -> 3187.529
+     634.5 Tenant-occupied housing
+     634.3 State & local governments (treasuries)
+     241.5 Households D1 (bottom 10%)
+     125.6 Households D2
+     104.9 Households D3
+      96.4 Households D4
+      82.8 Households D5
+      77.4 Federal general government (defense)
+      69.8 Hospitals
+      69.0 Electric power generation, transmission, and distribution
+      66.8 Oil and gas extraction
+      64.1 Residential maintenance and repair
+      63.6 Other computer and electronic products
+      61.9 Federal general government (nondefense)
+      50.9 Households D6
+-> SAVING 2754.853
+    1199.9 Households top 1%
+     384.6 Households 95-99%
+     248.5 Monetary authorities and depository credit intermediation
+     159.0 Households D9
+     114.5 Households 90-95%
+      93.9 Other real estate
+      75.1 Households D8
+      41.8 Legal services
+      40.0 Funds, trusts & other financial vehicles (mutual funds, trusts, fund admin)
+      29.0 Insurance carriers, except direct life
+      27.5 Insurance agencies, brokerages, and related activities
+      19.8 Other food and beverage and tobacco products
+      17.9 Iron and steel mills and ferroalloy manufacturing
+      15.7 Nonstore retailers
+      15.3 Other residential structures
+Federal Reserve                                    in    106.5 out    106.5 dwell     7.0
+Households D1 (bottom 10%)                         in    508.2 out    508.2 dwell    60.3
+Households D2                                      in    652.0 out    652.0 dwell    70.5
+Households D3                                      in    762.1 out    762.1 dwell    90.5
+Households D4                                      in    867.5 out    867.5 dwell   110.4
+Households D5                                      in    993.9 out    993.9 dwell   135.0
+Households D6                                      in   1138.2 out   1138.2 dwell   151.5
+Households D7                                      in   1312.2 out   1312.2 dwell   175.2
+Households D8                                      in   1582.0 out   1582.0 dwell   193.8
+Households D9                                      in   2052.7 out   2052.7 dwell   224.0
+Households 90-95%                                  in   1510.5 out   1510.5 dwell   304.5
+Households 95-99%                                  in   1888.1 out   1888.1 dwell   406.0
+Households top 1%                                  in   2092.7 out   2092.7 dwell   507.3
+State & local governments (treasuries)             in   3138.6 out   3138.6 dwell    46.5

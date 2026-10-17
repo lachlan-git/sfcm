@@ -18,7 +18,6 @@ const SECTOR_COLORS = {
   'Industrial': '#8c564b',
   'Trade & transport': '#bcbd22',
   'Services': '#1f77b4',
-  'Investment': '#e377c2',
   'Pensions': '#8c6d31',
   'Rest of world': '#7f7f7f',
 };

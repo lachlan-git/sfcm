@@ -17,7 +17,7 @@ print("-> SAVING", sum(v for v, _ in sav))
 for v, n in sav[:15]:
     print(f"  {v:8.1f} {n}")
 for n in d["nodes"]:
-    if n["id"].startswith("HH") or n["id"] in ("SL", "CAP", "FRB"):
+    if n["id"].startswith("HH") or n["id"] in ("SL", "FRB"):
         print(
             f"{n['name']:50s} in {n['inflow']:8.1f} out {n['outflow']:8.1f} dwell {n['dwell']:7.1f}"
         )
